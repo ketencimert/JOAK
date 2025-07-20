@@ -167,7 +167,7 @@ class PMIModel(tf.keras.Model):
             ).prefetch(tf.data.AUTOTUNE)
 
         self.optimizer = tf.keras.optimizers.Adam()
-        self.filename = datetime.now().strftime("pmi_model_%Y%m%d_%H%M%S.h5")
+        self.filename = datetime.now().strftime("pmi_model_%Y%m%d_%H%M%S")
         self.best_val_loss = tf.Variable(float('inf'), trainable=False)
         self.checkpoint = tf.train.Checkpoint(
             model=self.network,
@@ -271,7 +271,7 @@ class PMIModel(tf.keras.Model):
         📌 i.e., N by 2^D PMI values (per-instance by per-interaction)
         """
         exp_pmi = []
-        for interaction in self.interactions:
+        for interaction in [[]] + self.interactions:
             m = np.zeros_like(x)
             m[:,interaction] = 1
             #returns logits: log (p/1-p)
