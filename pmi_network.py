@@ -1,0 +1,259 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Jul 14 21:27:35 2025
+
+@author: Mert
+"""
+
+import numpy as np
+import itertools
+import tensorflow as tf
+# to generate masks
+
+def masked_fill(tensor, mask, value):
+    return tf.where(mask, tf.fill(tf.shape(tensor), value), tensor)
+
+def topk_numpy(arr, k, axis=-1, largest=True, sorted=True):
+    if largest:
+        partitioned_indices = np.argpartition(-arr, k-1, axis=axis)
+    else:
+        partitioned_indices = np.argpartition(arr, k-1, axis=axis)
+
+    topk_indices_unsorted = np.take(
+        partitioned_indices, np.arange(k), axis=axis
+        )
+
+    topk_values_unsorted = np.take_along_axis(
+        arr, topk_indices_unsorted, axis=axis
+        )
+
+    if sorted:
+        sort_order = np.argsort(
+            -topk_values_unsorted if largest else topk_values_unsorted,
+            axis=axis
+            )
+        topk_values = np.take_along_axis(
+            topk_values_unsorted, sort_order, axis=axis
+            )
+        topk_indices = np.take_along_axis(
+            topk_indices_unsorted, sort_order, axis=axis
+            )
+        return topk_values, topk_indices
+    else:
+        return topk_values_unsorted, topk_indices_unsorted
+
+def create_resulting_mask(input_size, output_size, combinations):
+    #Define the last mask
+    comb_size = len(combinations)
+    comb_range = range(comb_size)
+    mask = np.zeros((input_size, output_size))
+    choice = np.random.choice(
+        comb_range,
+        output_size-comb_size,
+        replace=True
+        )
+    choices = np.sort(np.concatenate([comb_range, choice]))
+    for i, choice in enumerate(choices):
+        for c in combinations[choice]:
+            mask[c,i] = 1
+    return mask
+
+def generate_masks(input_size, embedding_size, hidden):
+
+    combination_order = 1
+
+    features = list(range(input_size))
+    combinations = list(
+        itertools.combinations(features, combination_order)
+        )
+
+    #this is a must in general
+    assert all([h>=len(combinations) for h in hidden])
+
+    layers = [input_size] + hidden
+    first_mask = create_resulting_mask(
+        input_size=layers[0],
+        output_size=layers[1],
+        combinations=combinations,
+        )
+
+    masks = [first_mask]
+    layers = list(layers)
+    resulting_mask = None
+    for h0, h1 in zip(layers[:-1][1:], layers[1:][1:]):
+        # print(h0, h1)
+        resulting_mask = create_resulting_mask(
+            input_size,
+            h1,
+            combinations
+            ) #want to be in the form of
+
+        second_last_mask = []
+        for i in range(h1):
+            ones = []
+            zeros = []
+            topk = topk_numpy(
+                1*(resulting_mask[:,i] !=0), resulting_mask.shape[0]
+                )
+            for value, index in zip(topk[0], topk[1]):
+                if value != 0:
+                    ones.append(index.item())
+                else:
+                    zeros.append(index.item())
+            candidate = first_mask[ones].sum(0) != 0
+            fltr = first_mask[zeros].sum(0) == 0
+            second_last_mask.append((fltr*candidate*1.).reshape(-1,1))
+
+        second_last_mask = np.concatenate(second_last_mask, 1)
+        first_mask = np.matmul(first_mask, second_last_mask)
+        masks.append(second_last_mask)
+    second_last_mask = []
+    if resulting_mask is None:
+        resulting_mask = masks[0]
+    for row in resulting_mask:
+        row = row.reshape(-1,1).repeat(embedding_size, -1)
+        second_last_mask.append(row)
+    second_last_mask = np.concatenate(second_last_mask, -1)
+    masks.append(second_last_mask)
+    return masks
+
+class MaskedDense(tf.keras.layers.Layer):
+    def __init__(self, units, mask, activation=None, use_bias=True):
+        super().__init__()
+        self.units = units
+        self.mask = tf.constant(mask, dtype=tf.float32)  # fixed binary mask
+        self.activation = tf.keras.activations.get(activation)
+        self.use_bias = use_bias
+
+    def build(self, input_shape):
+        input_dim = input_shape[-1]
+        self.w = self.add_weight(
+            shape=(input_dim, self.units),
+            initializer="glorot_uniform",
+            trainable=True,
+            name="weights"
+        )
+        if self.use_bias:
+            self.b = self.add_weight(
+                shape=(self.units,),
+                initializer="zeros",
+                trainable=True,
+                name="bias"
+            )
+        else:
+            self.b = None
+
+    def call(self, inputs):
+        # masked_w = self.w * self.mask  # element-wise masking
+        masked_w = masked_fill(self.w, self.mask==0, 0.)
+        output = tf.matmul(inputs, masked_w)
+        if self.use_bias:
+            output = output + self.b
+        if self.activation:
+            output = self.activation(output)
+        return output
+
+class PMINetwork(tf.keras.Model):
+    def __init__(
+            self, 
+            input_size=2, 
+            embedding_size=20,
+            masked_units=[64, 64], 
+            hidden_units=[64, 64],
+            activation='elu'
+            ):
+        super().__init__()
+
+        self.input_size = input_size
+        self.embedding_size = embedding_size
+
+        self.encoder = tf.keras.Sequential(
+            [
+                MaskedDense(
+                    m.shape[1], mask=m, activation=activation
+                    ) for m in generate_masks(
+                        input_size,
+                        embedding_size,
+                        masked_units
+                        )
+            ]
+            )
+        self.placeholder = self.add_weight(
+            shape=(1, input_size, embedding_size),
+            initializer='glorot_uniform',  # or better: 'glorot_uniform'
+            trainable=True,
+            name='placeholder'
+            )
+
+        self.aggregator = tf.keras.Sequential(
+            [
+                tf.keras.layers.Dense(
+                    h, 
+                    kernel_initializer='glorot_uniform', 
+                    activation=activation
+                    ) for h in hidden_units
+                ] + [tf.keras.layers.Dense(1)]
+            )
+
+    def call(self, inputs):
+        x, m = inputs
+
+        # Step 1: Apply shared encoder to each feature independently
+        x_encoded = self.encoder(x)  # shape: (B, D, embed_dim)
+        x_encoded = tf.reshape(
+            x_encoded, [-1, self.input_size, self.embedding_size]
+            )
+
+        # Step 2: Aggregate (sum over features)
+        m_expand = tf.repeat(
+            tf.expand_dims(m, axis=-1), repeats=x_encoded.shape[-1], axis=-1
+            )
+        B = tf.shape(x_encoded)[0]
+        placeholder_tiled = tf.tile(self.placeholder, [B, 1, 1])
+        # shape: (B, D, E)
+
+        x_encoded = x_encoded * m_expand + (1 - m_expand) * placeholder_tiled
+        x_agg = tf.reduce_sum(x_encoded, axis=1)  # shape: (B, embed_dim)
+        return self.aggregator(x_agg)
+
+# class PMINetwork(tf.keras.Model):
+#     def __init__(
+#             self, input_size=2, embedding_size=20,
+#             masked_units=[64, 64], hidden_units=[64, 64],
+#             ):
+#         super().__init__()
+#         self.input_size = input_size
+#         self.embedding_size = embedding_size
+#         masked_units = generate_masks(input_size, embedding_size, masked_units)
+#         self.shared_encoder = tf.keras.Sequential(
+#             [
+#                 MaskedDense(
+#                     m.shape[1], mask=m, activation='elu'
+#                     ) for m in masked_units
+#                 ]
+#             )
+
+#         aggregator = [
+#             tf.keras.layers.Dense(h, activation='elu') for h in hidden_units
+#             ] + [tf.keras.layers.Dense(1, activation='sigmoid')]
+#         self.aggregator = tf.keras.Sequential(aggregator)
+#         self.placeholder = tf.Variable(
+#             tf.random.normal((1, input_size, embedding_size)), trainable=True
+#             )
+#     def call(self, inputs):
+#         x, m = inputs
+#         # x shape: (batch_size, num_features)
+#         # Step 1: Apply shared encoder to each feature independently
+#         x_encoded = self.shared_encoder(x)  # shape: (B, D, embed_dim)
+#         x_encoded = tf.reshape(
+#             x_encoded, [-1, self.input_size, self.embedding_size]
+#             )
+#         # Step 2: Aggregate (sum over features)
+#         m = tf.repeat(
+#             tf.expand_dims(m, axis=-1), repeats=x_encoded.shape[-1], axis=-1
+#             )
+#         x_encoded = x_encoded * m + (1-m) * self.placeholder
+#         x_agg = tf.reduce_sum(x_encoded, axis=1)  # shape: (B, embed_dim)
+#         # Step 3: Pass through feedforward network
+#         output = self.aggregator(x_agg)  # shape: (B, output_dim)
+#         return output
