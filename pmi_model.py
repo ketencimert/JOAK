@@ -55,7 +55,16 @@ def topk_numpy(arr, k, axis=-1, largest=True, sorted=True):
     else:
         return topk_values_unsorted, topk_indices_unsorted
 
-def pmi_dataset_epoch(X, batch_size=256):
+def uniform_pmi_dataset_epoch(X, batch_size=256):
+    """
+    📌  This function assumes a uniform distribution over feature masking.
+    That is, for [0,1,2] we have [0,0,0] -> 1/8, [0,0,1] -> 1/8, [0,1,0] ->1/8
+    [0,1,1] -> 1/8 and so forth.
+    
+    📌 X: Dataset to batch
+    
+    📌 batch_size : Batch size used during training
+    """
     N, D = X.shape
     # Shuffle dataset indices once per epoch
     indices = np.random.permutation(N)
@@ -80,6 +89,70 @@ def pmi_dataset_epoch(X, batch_size=256):
             X_batch.astype(np.float32), m_batch.astype(np.float32)
             ), y_batch.astype(np.float32)
 
+def shapley_pmi_dataset_epoch(X, batch_size=256):
+    """
+    📌  This function assumes a uniform distribution over feature masking sizes.
+    That is, uniform distribution over "coalition" sizes. For [0,1,2], we have
+    size(0) -> 1/4, size(1) -> 1/4, size(2) -> 1/4, size(3) -> 1/4.
+
+    📌 X: Dataset to batch
+
+    📌 batch_size : Batch size used during training
+    """
+    N, D = X.shape
+    # Shuffle dataset indices once per epoch
+    indices = np.random.permutation(N)
+    for i in range(0, N, batch_size):
+        batch_idx = indices[i:i+batch_size]
+        x_joint = X[batch_idx]
+        # Create marginal sample by shuffling all but one randomly chosen
+        # feature
+        x_marg = x_joint.copy()
+        # Shuffle each column independently
+        perms = np.argsort(np.random.rand(x_joint.shape[0], D), axis=0)
+        # Use advanced indexing to apply permutations per column
+        x_marg = x_marg[perms, np.arange(D)]
+        # Stack joint and marginal, label joint=1 and marginal=0
+        X_batch = np.concatenate([x_joint, x_marg], axis=0)
+        y_batch = np.concatenate(
+            [np.ones(len(x_joint)), np.zeros(len(x_marg))], axis=0
+            )
+
+        feature_idx_init = np.zeros_like(x_joint)[:,0]
+        feature_idx = np.expand_dims(feature_idx_init, -1)
+
+        permutation = np.argsort(
+            np.random.normal(size=(
+                x_joint.shape[0],
+                x_joint.shape[-1] + 1)),
+            -1
+        )
+
+        arange = np.repeat(
+            np.expand_dims(np.arange(permutation.shape[-1]), 0),
+            permutation.shape[0], 0
+            )
+        pointer = arange <= np.argmax(
+            (permutation == feature_idx) * 1., -1
+        ).reshape(-1, 1)
+        p_sorted = topk_numpy(
+            -permutation, permutation.shape[-1], -1, sorted=True
+            )[1]
+        m_batch = np.concatenate(
+            [
+                np.diag(
+                    pointer[:, p_sorted[:, i]]
+                ).reshape(-1, 1) for i in range(
+                p_sorted.shape[-1]
+            )
+            ], -1
+                    )[:,1:]
+        m_batch = np.concatenate([m_batch, m_batch], 0)
+
+        yield (
+            X_batch.astype(np.float32), m_batch.astype(np.float32)
+            ), y_batch.astype(np.float32)
+
 class PMIModel(tf.keras.Model):
     def __init__(
             self,
@@ -93,6 +166,7 @@ class PMIModel(tf.keras.Model):
             epochs=1000,
             max_to_keep=10,
             num_evaluation_trials=10,
+            data_maker=uniform_pmi_dataset_epoch,
             ):
         super().__init__()
         """
@@ -148,7 +222,7 @@ class PMIModel(tf.keras.Model):
             )
 
         self.train_dataset = tf.data.Dataset.from_generator(
-            lambda: pmi_dataset_epoch(X_train, batch_size),
+            lambda: data_maker(X_train, batch_size),
             output_signature=((
                 tf.TensorSpec(shape=(None, D), dtype=tf.float32),
                 tf.TensorSpec(shape=(None, D), dtype=tf.float32)),
@@ -158,7 +232,7 @@ class PMIModel(tf.keras.Model):
         self.total = sum(1 for _ in self.train_dataset)
 
         self.valid_dataset = tf.data.Dataset.from_generator(
-            lambda: pmi_dataset_epoch(X_val, batch_size),
+            lambda: data_maker(X_val, batch_size),
             output_signature=((
                 tf.TensorSpec(shape=(None, D), dtype=tf.float32),
                 tf.TensorSpec(shape=(None, D), dtype=tf.float32)),
@@ -294,7 +368,10 @@ if __name__ == '__main__':
     X = X.astype(np.float32)
 
     # Define the model
-    model = PMIModel(X=X)
+    model = PMIModel(
+        X=X, 
+        data_maker=shapley_pmi_dataset_epoch
+        )
     model.train()
 
     # Evaluate PMI on a grid
@@ -302,8 +379,9 @@ if __name__ == '__main__':
     x1 = np.linspace(X[:,1].min() * 1.4, X[:,1].max() * 1.4, 200)
     grid_x0, grid_x1 = np.meshgrid(x0, x1)
     grid_points = np.stack([grid_x0.ravel(), grid_x1.ravel()], axis=1)
-
-    for points in model.exp_pmi_values(grid_points).T:
+    
+    pmi_points = model.exp_pmi_values(grid_points)
+    for points in pmi_points.T:
         # Predict probabilities and compute PMI
         exp_pmi_vals = points
         pmi_grid = exp_pmi_vals.reshape(grid_x0.shape)
