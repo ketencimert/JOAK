@@ -6,24 +6,45 @@ import tensorflow as tf
 from tqdm import tqdm
 
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+
 from sklearn.datasets import make_moons
 from sklearn.model_selection import train_test_split
 
 from pmi_network import PMINetwork
 
 def sigmoid(z):
+    """
+    📌 Computes the sigmoid
+    """
     return 1/(1 + np.exp(-z))
 
 def generate_combinations(lst, C):
+    """
+    📌 Generate all possible combinations of the elements in a list.
+    
+    📌 lst: List of indices. e.g. [0,1,2]
+    
+    📌 C: Maximum order of combinations
+    
+    📌 e.g., if input is [0,1,2] output will be 
+    [[0], [1], [2], [0,1], [0,2], [1,2], [0,1,2]]
+    """
     all_combos = []
     for r in range(1, C + 1):
         all_combos.extend(combinations(lst, r))
     return [list(c) for c in all_combos]
 
-def masked_fill(tensor, mask, value):
-    return tf.where(mask, tf.fill(tf.shape(tensor), value), tensor)
-
 def topk_numpy(arr, k, axis=-1, largest=True, sorted=True):
+    """
+    📌 Numpy implementation of torch.topk
+    
+    📌 arr: input array
+    
+    📌 topk: number of 'top' elements to return
+    
+    📌 axis: axis which the 'top' elements are returned
+    """
     if largest:
         partitioned_indices = np.argpartition(-arr, k-1, axis=axis)
     else:
@@ -159,13 +180,13 @@ class PMIModel(tf.keras.Model):
             X: np.asarray,
             max_interaction_depth=2,
             activation='elu',
-            embedding_size=100,
+            embedding_size=20,
             masked_units=[200, 200],
             hidden_units=[64, 64, 64],
-            batch_size=512,
+            batch_size=1024,
             epochs=1000,
-            max_to_keep=10,
-            num_evaluation_trials=10,
+            max_to_keep=20,
+            num_evaluation_trials=25, #reduce the variance 5 times
             data_maker=uniform_pmi_dataset_epoch,
             ):
         super().__init__()
@@ -283,11 +304,18 @@ class PMIModel(tf.keras.Model):
                     f"  | best = {self.best_val_loss.numpy():.4f}"
                     )
                 # 💾 Save if improved
-                if avg_val_loss <= self.best_val_loss:
-                    self.best_val_loss.assign(avg_val_loss)
-                    print("✅ New best model, saving checkpoint...")
-                    print(f"✅ New best loss: {avg_val_loss:.4f}")
-                    self.manager.save()
+                cond1 = avg_val_loss <= self.best_val_loss
+                cond2 = np.isclose(
+                    avg_val_loss, self.best_val_loss.numpy(), atol=2e-5
+                    ) 
+                # Validation could be good/bad due to noise. So, let's save
+                # if it is close to the best score with 2e-5 dist.
+                if cond1 or cond2:
+                    print("✅ New potential best model, saving checkpoint...")
+                    self.manager.save()                    
+                    if cond1:
+                        self.best_val_loss.assign(avg_val_loss)
+                        print(f"✅ New best loss: {avg_val_loss:.4f}")
                 else:
                     print(
                         f"Loss: {avg_val_loss:.4f} | "
@@ -329,12 +357,14 @@ class PMIModel(tf.keras.Model):
         best_ckpt_path, best_loss = min(checkpoint_losses, key=lambda x: x[1])
         print(
             f"\nBest checkpoint: {best_ckpt_path}"
-            "with avg loss: {best_loss:.4f}"
+            f"with avg loss: {best_loss:.4f}"
             )
         self.checkpoint.restore(best_ckpt_path).expect_partial()
 
-    def exp_pmi_values(self, x):
+    def exp_pmi_values_(self, x):
         """
+        Run this for testing.
+        
         📌 input: typically the values you will feed into your OAK-Kernel
 
         📌 output: exponential pmi values given an input instance x.
@@ -358,13 +388,44 @@ class PMIModel(tf.keras.Model):
             exp_pmi.append(exp_pmi_vals)
         return np.concatenate(exp_pmi, -1)
 
+    def exp_pmi_values(self, x):
+        """
+        For OAK, use this.
+        
+        📌 input: typically the values you will feed into your OAK-Kernel
+
+        📌 output: exponential pmi values given an input instance x.
+        if x is 3 dimensional and your are modeling all interactions than
+        columns will represent:
+        [null, 0, 1, 2, (0,1), (0,2), (1,2), (1,2,3)]
+        
+        📌 i.e., N by 2^D PMI values (per-instance by per-interaction)
+        """
+        exp_pmi = []
+        for interaction in [[]] + self.interactions:
+            m = np.zeros_like(x)
+            m[:,interaction] = 1
+            #returns logits: log (p/1-p)
+            if len(interaction) <= 1:
+                exp_pmi_vals = np.ones((x.shape[0], 1))
+            else:
+                exp_pmi_vals = np.exp(
+                    self.network.predict(
+                        (x, tf.convert_to_tensor(m)),
+                        batch_size=self.batch_size,
+                        )
+                    )
+            exp_pmi.append(exp_pmi_vals)
+        return np.concatenate(exp_pmi, -1)
+
+
 if __name__ == '__main__':
 
     # Test runs
     # Create Two Moons dataset
     X, _ = make_moons(n_samples=30000, noise=0.1)
-    N, D = X.shape
     # X = np.random.normal(0, 1, size=(30000,2))
+    N, D = X.shape
     X = X.astype(np.float32)
 
     # Define the model
@@ -380,14 +441,24 @@ if __name__ == '__main__':
     grid_x0, grid_x1 = np.meshgrid(x0, x1)
     grid_points = np.stack([grid_x0.ravel(), grid_x1.ravel()], axis=1)
     
-    pmi_points = model.exp_pmi_values(grid_points)
+    pmi_points = model.exp_pmi_values_(grid_points) #for testing
     for points in pmi_points.T:
         # Predict probabilities and compute PMI
         exp_pmi_vals = points
         pmi_grid = exp_pmi_vals.reshape(grid_x0.shape)
         # Plot the estimated PMI
         plt.figure(figsize=(6, 5))
-        plt.contourf(grid_x0, grid_x1, pmi_grid, levels=50, cmap='viridis')
+        vmin = pmi_grid.min() - 1e-6
+        vmax = pmi_grid.max() + 1e-6
+        vcenter = 0.5 * (vmin + vmax)
+        divnorm = mcolors.TwoSlopeNorm(
+            vmin=vmin,
+            vcenter=vcenter, 
+            vmax=vmax
+            )
+        plt.contourf(
+            grid_x0, grid_x1, pmi_grid, norm=divnorm, levels=50, cmap='viridis'
+            )
         plt.colorbar(label='PMI Estimate')
         plt.title(
             'Estimated PMI(x₀; x₁) via Discriminator (Shuffled In-Model)'
