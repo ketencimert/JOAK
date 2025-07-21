@@ -153,6 +153,33 @@ class MaskedDense(tf.keras.layers.Layer):
             output = self.activation(output)
         return output
 
+class SimpleAttention(tf.keras.layers.Layer):
+    def __init__(self, input_size, hidden_units, activation):
+        super(SimpleAttention, self).__init__()
+        self.input_size = input_size
+        # Projection to compute attention scores
+        self.attn_proj = tf.keras.Sequential(
+            [
+                tf.keras.layers.Dense(
+                    h, 
+                    kernel_initializer='glorot_uniform', 
+                    activation=activation
+                    ) for h in hidden_units
+                ] + [tf.keras.layers.Dense(1)]
+            )
+
+    def call(self, x):
+        """
+        x: Tensor of shape (N, D, E)
+        Returns: Tensor of shape (N, E)
+        """
+        # Compute attention logits (N, D, 1)
+        attn_logits = self.attn_proj(x) / (self.input_size**0.5) # shape: (N, D, 1)
+        attn_weights = tf.nn.softmax(attn_logits, axis=1)  # softmax over D
+        # Weighted sum over D: shape (N, E)
+        weighted_sum = tf.reduce_sum(attn_weights * x, axis=1)
+        return weighted_sum
+
 class PMINetwork(tf.keras.Model):
     def __init__(
             self, 
@@ -194,7 +221,10 @@ class PMINetwork(tf.keras.Model):
                     ) for h in hidden_units
                 ] + [tf.keras.layers.Dense(1)]
             )
-
+        self.attention = SimpleAttention(
+            self.input_size, hidden_units, activation
+            )
+        
     def call(self, inputs):
         x, m = inputs
 
@@ -213,7 +243,7 @@ class PMINetwork(tf.keras.Model):
         # shape: (B, D, E)
 
         x_encoded = x_encoded * m_expand + (1 - m_expand) * placeholder_tiled
-        x_agg = tf.reduce_sum(x_encoded, axis=1)  # shape: (B, embed_dim)
+        x_agg = self.attention(x_encoded)  # shape: (B, embed_dim)
         return self.aggregator(x_agg)
 
 # class PMINetwork(tf.keras.Model):
