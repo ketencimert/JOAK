@@ -108,7 +108,7 @@ def uniform_pmi_dataset_epoch(X, batch_size=256):
         m_batch = np.concatenate([m_batch, m_batch], 0)
         yield (
             X_batch.astype(np.float32), m_batch.astype(np.float32)
-            ), y_batch.astype(np.float32)
+            ), 1 - y_batch.astype(np.float32)
 
 def shapley_pmi_dataset_epoch(X, batch_size=256):
     """
@@ -172,7 +172,7 @@ def shapley_pmi_dataset_epoch(X, batch_size=256):
 
         yield (
             X_batch.astype(np.float32), m_batch.astype(np.float32)
-            ), y_batch.astype(np.float32)
+            ), 1 - y_batch.astype(np.float32)
 
 class PMIModel(tf.keras.Model):
     def __init__(
@@ -187,7 +187,7 @@ class PMIModel(tf.keras.Model):
             epochs=1000,
             max_to_keep=20,
             num_evaluation_trials=25, #reduce the variance 5 times
-            data_maker=uniform_pmi_dataset_epoch,
+            data_maker=shapley_pmi_dataset_epoch,
             ):
         super().__init__()
         """
@@ -261,7 +261,9 @@ class PMIModel(tf.keras.Model):
                 )
             ).prefetch(tf.data.AUTOTUNE)
 
-        self.optimizer = tf.keras.optimizers.Adam()
+        self.optimizer = tf.keras.optimizers.Adam(
+            learning_rate=1e-3, weight_decay=1e-4
+            )
         self.filename = datetime.now().strftime("pmi_model_%Y%m%d_%H%M%S")
         self.best_val_loss = tf.Variable(float('inf'), trainable=False)
         self.checkpoint = tf.train.Checkpoint(
@@ -361,7 +363,7 @@ class PMIModel(tf.keras.Model):
             )
         self.checkpoint.restore(best_ckpt_path).expect_partial()
 
-    def exp_pmi_values_(self, x):
+    def inv_exp_pmi_array_(self, x):
         """
         Run this for testing.
         
@@ -374,23 +376,51 @@ class PMIModel(tf.keras.Model):
         
         📌 i.e., N by 2^D PMI values (per-instance by per-interaction)
         """
-        exp_pmi = []
+        inv_exp_pmi_array = []
         for interaction in [[]] + self.interactions:
             m = np.zeros_like(x)
             m[:,interaction] = 1
             #returns logits: log (p/1-p)
-            exp_pmi_vals = np.exp(
+            inv_exp_pmi_vals = np.exp(
                 self.network.predict(
                     (x, tf.convert_to_tensor(m)),
                     batch_size=self.batch_size,
                     )
                 )
-            exp_pmi.append(exp_pmi_vals)
-        return np.concatenate(exp_pmi, -1)
+            inv_exp_pmi_array.append(inv_exp_pmi_vals)
+        return np.concatenate(inv_exp_pmi_array, -1)
 
-    def exp_pmi_values(self, x):
+    def inv_exp_pmi_array(self, x):
         """
-        For OAK, use this.
+        📌 input: typically the values you will feed into your OAK-Kernel
+
+        📌 output: exponential pmi values given an input instance x.
+        if x is 3 dimensional and your are modeling all interactions than
+        columns will represent:
+        [null, 0, 1, 2, (0,1), (0,2), (1,2), (1,2,3)]
+        
+        📌 i.e., N by 2^D PMI values (per-instance by per-interaction)
+        """
+        inv_exp_pmi_array = []
+        for interaction in [[]] + self.interactions:
+            m = np.zeros_like(x)
+            m[:,interaction] = 1
+            #returns logits: log (p/1-p)
+            if len(interaction) <= 1:
+                inv_exp_pmi_vals = np.ones((x.shape[0], 1))
+            else:
+                inv_exp_pmi_vals = np.exp(
+                    self.network.predict(
+                        (x, tf.convert_to_tensor(m)),
+                        batch_size=self.batch_size,
+                        )
+                    )
+            inv_exp_pmi_array.append(inv_exp_pmi_vals )
+        return np.concatenate(inv_exp_pmi_array, -1)
+
+    def inv_exp_pmi_dict(self, x):
+        """
+        For JOAK, use this.
         
         📌 input: typically the values you will feed into your OAK-Kernel
 
@@ -401,22 +431,21 @@ class PMIModel(tf.keras.Model):
         
         📌 i.e., N by 2^D PMI values (per-instance by per-interaction)
         """
-        exp_pmi = []
+        inv_exp_pmi_dict = dict()
         for interaction in [[]] + self.interactions:
             m = np.zeros_like(x)
             m[:,interaction] = 1
             #returns logits: log (p/1-p)
             if len(interaction) <= 1:
-                exp_pmi_vals = np.ones((x.shape[0], 1))
+                inv_exp_pmi_dict[tuple(interaction)] = np.ones((x.shape[0], 1))
             else:
-                exp_pmi_vals = np.exp(
+                inv_exp_pmi_dict[tuple(interaction)] = np.exp(
                     self.network.predict(
                         (x, tf.convert_to_tensor(m)),
                         batch_size=self.batch_size,
                         )
                     )
-            exp_pmi.append(exp_pmi_vals)
-        return np.concatenate(exp_pmi, -1)
+        return inv_exp_pmi_dict
 
 
 if __name__ == '__main__':
@@ -436,28 +465,29 @@ if __name__ == '__main__':
     model.train()
 
     # Evaluate PMI on a grid
-    x0 = np.linspace(X[:,0].min() * 1.4, X[:,0].max() * 1.4, 200)
-    x1 = np.linspace(X[:,1].min() * 1.4, X[:,1].max() * 1.4, 200)
+    x0 = np.linspace(X[:,0].min(), X[:,0].max(), 200)
+    x1 = np.linspace(X[:,1].min(), X[:,1].max(), 200)
     grid_x0, grid_x1 = np.meshgrid(x0, x1)
     grid_points = np.stack([grid_x0.ravel(), grid_x1.ravel()], axis=1)
-    
-    pmi_points = model.exp_pmi_values_(grid_points) #for testing
+    pmi_points = model.inv_exp_pmi_array_(grid_points) #for testing
     for points in pmi_points.T:
         # Predict probabilities and compute PMI
         exp_pmi_vals = points
-        pmi_grid = exp_pmi_vals.reshape(grid_x0.shape)
+        pmi_grid = np.log(exp_pmi_vals.reshape(grid_x0.shape))
         # Plot the estimated PMI
         plt.figure(figsize=(6, 5))
-        vmin = pmi_grid.min() - 1e-6
-        vmax = pmi_grid.max() + 1e-6
-        vcenter = 0.5 * (vmin + vmax)
-        divnorm = mcolors.TwoSlopeNorm(
-            vmin=vmin,
-            vcenter=vcenter, 
-            vmax=vmax
-            )
+        # vmin = pmi_grid.min() - 1e-6
+        # vmax = pmi_grid.max() + 1e-6
+        # vcenter = 0.5 * (vmin + vmax)
+        # divnorm = mcolors.TwoSlopeNorm(
+        #     vmin=vmin,
+        #     vcenter=vcenter, 
+        #     vmax=vmax
+        #     )
         plt.contourf(
-            grid_x0, grid_x1, pmi_grid, norm=divnorm, levels=50, cmap='viridis'
+            grid_x0, grid_x1, pmi_grid,
+            #norm=divnorm, 
+            levels=200, cmap='viridis'
             )
         plt.colorbar(label='PMI Estimate')
         plt.title(

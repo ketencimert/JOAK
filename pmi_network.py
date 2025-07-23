@@ -207,7 +207,7 @@ class PMINetwork(tf.keras.Model):
             )
         self.placeholder = self.add_weight(
             shape=(1, input_size, embedding_size),
-            initializer='glorot_uniform',  # or better: 'glorot_uniform'
+            initializer='glorot_uniform', 
             trainable=True,
             name='placeholder'
             )
@@ -245,45 +245,3 @@ class PMINetwork(tf.keras.Model):
         x_encoded = x_encoded * m_expand + (1 - m_expand) * placeholder_tiled
         x_agg = self.attention(x_encoded)  # shape: (B, embed_dim)
         return self.aggregator(x_agg)
-
-# class PMINetwork(tf.keras.Model):
-#     def __init__(
-#             self, input_size=2, embedding_size=20,
-#             masked_units=[64, 64], hidden_units=[64, 64],
-#             ):
-#         super().__init__()
-#         self.input_size = input_size
-#         self.embedding_size = embedding_size
-#         masked_units = generate_masks(input_size, embedding_size, masked_units)
-#         self.shared_encoder = tf.keras.Sequential(
-#             [
-#                 MaskedDense(
-#                     m.shape[1], mask=m, activation='elu'
-#                     ) for m in masked_units
-#                 ]
-#             )
-
-#         aggregator = [
-#             tf.keras.layers.Dense(h, activation='elu') for h in hidden_units
-#             ] + [tf.keras.layers.Dense(1, activation='sigmoid')]
-#         self.aggregator = tf.keras.Sequential(aggregator)
-#         self.placeholder = tf.Variable(
-#             tf.random.normal((1, input_size, embedding_size)), trainable=True
-#             )
-#     def call(self, inputs):
-#         x, m = inputs
-#         # x shape: (batch_size, num_features)
-#         # Step 1: Apply shared encoder to each feature independently
-#         x_encoded = self.shared_encoder(x)  # shape: (B, D, embed_dim)
-#         x_encoded = tf.reshape(
-#             x_encoded, [-1, self.input_size, self.embedding_size]
-#             )
-#         # Step 2: Aggregate (sum over features)
-#         m = tf.repeat(
-#             tf.expand_dims(m, axis=-1), repeats=x_encoded.shape[-1], axis=-1
-#             )
-#         x_encoded = x_encoded * m + (1-m) * self.placeholder
-#         x_agg = tf.reduce_sum(x_encoded, axis=1)  # shape: (B, embed_dim)
-#         # Step 3: Pass through feedforward network
-#         output = self.aggregator(x_agg)  # shape: (B, output_dim)
-#         return output
