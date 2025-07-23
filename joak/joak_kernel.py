@@ -90,7 +90,10 @@ class JOAKKernel(gpflow.kernels.Kernel):
         )
         self.share_var_across_orders = share_var_across_orders
         
-        self.pmi_model = pmi_model        
+        self.pmi_model = pmi_model
+        
+        print('Mean is', tf.reduce_mean(pmi_model.network.placeholder))
+        
         self.gaussian_pmi = gaussian_pmi
         # p0 is a list of probability measures for binary kernels, set to None if it is not binary
         if p0 is None:
