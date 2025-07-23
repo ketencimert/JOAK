@@ -8,14 +8,14 @@ import numpy as np
 import tensorflow as tf
 from functools import reduce
 from typing import List, Optional, Tuple, Type
-from oak.input_measures import (
+from joak.input_measures import (
     EmpiricalMeasure,
     GaussianMeasure,
     MOGMeasure,
 )
-from oak.ortho_binary_kernel import OrthogonalBinary
-from oak.ortho_categorical_kernel import OrthogonalCategorical
-from oak.ortho_rbf_kernel import OrthogonalRBFKernel
+from joak.ortho_binary_kernel import OrthogonalBinary
+from joak.ortho_categorical_kernel import OrthogonalCategorical
+from joak.ortho_rbf_kernel import OrthogonalRBFKernel
 from tensorflow_probability import bijectors as tfb
 
 from pmi_model import PMIModel
@@ -82,7 +82,7 @@ class JOAKKernel(gpflow.kernels.Kernel):
         assert len(flat_dims) == len(
             np.unique(flat_dims)
         ), "Active dims contains duplicates."
-
+        self.gaussian = gaussian
         delta2 = 1  # prior measure process variance hardcoded to 1
         # set up kernels (without parameters for variance)
         self.base_kernels, self.max_interaction_depth = (
@@ -227,8 +227,8 @@ class JOAKKernel(gpflow.kernels.Kernel):
         if X2 is None:
             X2 = X
         if not self.gaussian:
-            inv_exp_pmi_dict = self.pmi_network.inv_exp_pmi_dict(
-                np.concat([X, X2], 0)
+            inv_exp_pmi_dict = self.pmi_model.inv_exp_pmi_dict(
+                tf.concat([X, X2], 0)
                 )
             #returns a tensor/array of size N by O(C(N, Max_prder))
         else:
@@ -258,13 +258,11 @@ class JOAKKernel(gpflow.kernels.Kernel):
                 key = tuple(sorted(subset))
                 #this needs to return N*M by 1
                 inv_exp_pmi = inv_exp_pmi_dict[key]
-                inv_exp_pmi = inv_exp_pmi.reshape(-1, 1)
+                inv_exp_pmi = tf.expand_dims(inv_exp_pmi, -1)
 
                 inv_exp_pmi1, inv_exp_pmi2 = inv_exp_pmi[:N],\
                 inv_exp_pmi[N:]
-                inv_exp_pmi = tf.convert_to_tensor(
-                    inv_exp_pmi1 @ inv_exp_pmi2.T
-                    )
+                inv_exp_pmi = inv_exp_pmi1 @ tf.transpose(inv_exp_pmi2)
                 #if key in interaction_weights:
                 # weight = interaction_weights[key]
                 term = tf.ones_like(kernel_matrices[0])

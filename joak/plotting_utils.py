@@ -11,7 +11,7 @@ import numpy as np
 import tensorflow as tf
 import tikzplotlib
 from matplotlib import pyplot as plt
-from oak.utils import get_model_sufficient_statistics
+from joak.utils import get_model_sufficient_statistics
 
 
 # -

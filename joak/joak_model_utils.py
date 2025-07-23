@@ -24,12 +24,12 @@ from sklearn import preprocessing
 from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
 from tensorflow_probability import distributions as tfd
-from oak import plotting_utils
-from oak.input_measures import MOGMeasure
-from oak.normalising_flow import Normalizer
-from oak.joak_kernel import JOAKKernel, get_list_representation
-from oak.plotting_utils import FigureDescription, save_fig_list
-from oak.utils import compute_sobol_oak, initialize_kmeans_with_categorical
+from joak import plotting_utils
+from joak.input_measures import MOGMeasure
+from joak.normalising_flow import Normalizer
+from joak.joak_kernel import JOAKKernel, get_list_representation
+from joak.plotting_utils import FigureDescription, save_fig_list
+from joak.utils import compute_sobol_oak, initialize_kmeans_with_categorical
 # -
 
 from pmi_model import PMIModel
@@ -141,7 +141,10 @@ def create_model_joak(
         if (p0[dim] is None) and (p[dim] is None):
             base_kernels[dim] = gpflow.kernels.RBF
     X, y = data
-    pmi_model = PMIModel(X)
+    pmi_model = PMIModel(
+        X=X,
+        max_interaction_depth=max_interaction_depth,
+        )
     pmi_model.train()
     
     k = JOAKKernel(
@@ -178,6 +181,7 @@ def create_model_joak(
                 p.prior = tfd.Gamma(f64(1.0), f64(0.2))
     # Initialise likelihood variance to small value to avoid finding all-noise explanation minima
     model.likelihood.variance.assign(0.01)
+    
     if optimise:
         t_start = time.time()
         opt = gpflow.optimizers.Scipy()

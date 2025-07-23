@@ -6,7 +6,7 @@ import gpflow
 import numpy as np
 import tensorflow as tf
 from typing import Optional
-from oak.input_measures import (
+from joak.input_measures import (
     Measure,
     EmpiricalMeasure,
     GaussianMeasure,

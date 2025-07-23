@@ -12,16 +12,16 @@ from gpflow.config import default_float, default_jitter
 from gpflow.covariances.dispatch import Kuf, Kuu
 from sklearn.cluster import KMeans
 from gpflow.models import GPModel
-from oak.input_measures import EmpiricalMeasure, GaussianMeasure, MOGMeasure
-from oak.oak_kernel import (
+from joak.input_measures import EmpiricalMeasure, GaussianMeasure, MOGMeasure
+from joak.joak_kernel import (
     KernelComponenent,
-    OAKKernel,
+    JOAKKernel,
     bounded_param,
     get_list_representation,
 )
-from oak.ortho_binary_kernel import OrthogonalBinary
-from oak.ortho_categorical_kernel import OrthogonalCategorical
-from oak.ortho_rbf_kernel import OrthogonalRBFKernel
+from joak.ortho_binary_kernel import OrthogonalBinary
+from joak.ortho_categorical_kernel import OrthogonalCategorical
+from joak.ortho_rbf_kernel import OrthogonalRBFKernel
 # -
 
 opt = gpflow.optimizers.Scipy()

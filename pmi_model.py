@@ -6,12 +6,16 @@ import tensorflow as tf
 from tqdm import tqdm
 
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
+# import matplotlib.colors as mcolors
 
 from sklearn.datasets import make_moons
 from sklearn.model_selection import train_test_split
 
 from pmi_network import PMINetwork
+
+import gpflow
+gpflow.config.set_default_float(tf.float64)
+tf.keras.backend.set_floatx('float64')
 
 def sigmoid(z):
     """
@@ -107,8 +111,8 @@ def uniform_pmi_dataset_epoch(X, batch_size=256):
         m_batch = np.random.binomial(1, 1/2, x_joint.shape)
         m_batch = np.concatenate([m_batch, m_batch], 0)
         yield (
-            X_batch.astype(np.float32), m_batch.astype(np.float32)
-            ), 1 - y_batch.astype(np.float32)
+            X_batch.astype(np.float64), m_batch.astype(np.float64)
+            ), 1 - y_batch.astype(np.float64)
 
 def shapley_pmi_dataset_epoch(X, batch_size=256):
     """
@@ -171,8 +175,8 @@ def shapley_pmi_dataset_epoch(X, batch_size=256):
         m_batch = np.concatenate([m_batch, m_batch], 0)
 
         yield (
-            X_batch.astype(np.float32), m_batch.astype(np.float32)
-            ), 1 - y_batch.astype(np.float32)
+            X_batch.astype(np.float64), m_batch.astype(np.float64)
+            ), 1 - y_batch.astype(np.float64)
 
 class PMIModel(tf.keras.Model):
     def __init__(
@@ -237,7 +241,8 @@ class PMIModel(tf.keras.Model):
             activation=activation,
             )
 
-        X = X.astype(np.float32)
+        X = X.astype(np.float64)
+        D = X.shape[1]
         X_train, X_val, _, _ = train_test_split(
             X, X, test_size=0.33, random_state=42
             )
@@ -245,9 +250,9 @@ class PMIModel(tf.keras.Model):
         self.train_dataset = tf.data.Dataset.from_generator(
             lambda: data_maker(X_train, batch_size),
             output_signature=((
-                tf.TensorSpec(shape=(None, D), dtype=tf.float32),
-                tf.TensorSpec(shape=(None, D), dtype=tf.float32)),
-                tf.TensorSpec(shape=(None,), dtype=tf.float32),
+                tf.TensorSpec(shape=(None, D), dtype=tf.float64),
+                tf.TensorSpec(shape=(None, D), dtype=tf.float64)),
+                tf.TensorSpec(shape=(None,), dtype=tf.float64),
                 )
             ).prefetch(tf.data.AUTOTUNE)
         self.total = sum(1 for _ in self.train_dataset)
@@ -255,9 +260,9 @@ class PMIModel(tf.keras.Model):
         self.valid_dataset = tf.data.Dataset.from_generator(
             lambda: data_maker(X_val, batch_size),
             output_signature=((
-                tf.TensorSpec(shape=(None, D), dtype=tf.float32),
-                tf.TensorSpec(shape=(None, D), dtype=tf.float32)),
-                tf.TensorSpec(shape=(None,), dtype=tf.float32),
+                tf.TensorSpec(shape=(None, D), dtype=tf.float64),
+                tf.TensorSpec(shape=(None, D), dtype=tf.float64)),
+                tf.TensorSpec(shape=(None,), dtype=tf.float64),
                 )
             ).prefetch(tf.data.AUTOTUNE)
 
@@ -433,18 +438,22 @@ class PMIModel(tf.keras.Model):
         """
         inv_exp_pmi_dict = dict()
         for interaction in [[]] + self.interactions:
-            m = np.zeros_like(x)
+            m = np.zeros(x.shape)
             m[:,interaction] = 1
             #returns logits: log (p/1-p)
             if len(interaction) <= 1:
-                inv_exp_pmi_dict[tuple(interaction)] = np.ones((x.shape[0], 1))
+                inv_exp_pmi_dict[tuple(interaction)] \
+                    = tf.convert_to_tensor(np.ones((x.shape[0], 1)))
             else:
-                inv_exp_pmi_dict[tuple(interaction)] = np.exp(
-                    self.network.predict(
-                        (x, tf.convert_to_tensor(m)),
-                        batch_size=self.batch_size,
+                inv_exp_pmi_dict[tuple(interaction)] \
+                    = tf.exp(
+                    self.network(
+                        (tf.convert_to_tensor(x), tf.convert_to_tensor(m)),
+                        # batch_size=self.batch_size,
+                        training=False
                         )
                     )
+                        
         return inv_exp_pmi_dict
 
 
@@ -455,7 +464,7 @@ if __name__ == '__main__':
     X, _ = make_moons(n_samples=30000, noise=0.1)
     # X = np.random.normal(0, 1, size=(30000,2))
     N, D = X.shape
-    X = X.astype(np.float32)
+    X = X.astype(np.float64)
 
     # Define the model
     model = PMIModel(
@@ -471,19 +480,11 @@ if __name__ == '__main__':
     grid_points = np.stack([grid_x0.ravel(), grid_x1.ravel()], axis=1)
     pmi_points = model.inv_exp_pmi_array_(grid_points) #for testing
     for points in pmi_points.T:
-        # Predict probabilities and compute PMI
+        # Predict probabilities and compute inverse PMI
         exp_pmi_vals = points
         pmi_grid = np.log(exp_pmi_vals.reshape(grid_x0.shape))
-        # Plot the estimated PMI
+        # Plot the estimated log inverse PMI
         plt.figure(figsize=(6, 5))
-        # vmin = pmi_grid.min() - 1e-6
-        # vmax = pmi_grid.max() + 1e-6
-        # vcenter = 0.5 * (vmin + vmax)
-        # divnorm = mcolors.TwoSlopeNorm(
-        #     vmin=vmin,
-        #     vcenter=vcenter, 
-        #     vmax=vmax
-        #     )
         plt.contourf(
             grid_x0, grid_x1, pmi_grid,
             #norm=divnorm, 

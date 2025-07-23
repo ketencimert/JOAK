@@ -1,3 +1,5 @@
 **/pmi_model_*
 __pycache__
 orthogonal-additive-gaussian-processes/*
+test/*
+data/*
