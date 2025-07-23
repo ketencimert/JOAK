@@ -1,3 +1,10 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Jul 21 11:03:40 2025
+
+@author: Mert
+"""
+
 # +
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
@@ -20,10 +27,12 @@ from tensorflow_probability import distributions as tfd
 from oak import plotting_utils
 from oak.input_measures import MOGMeasure
 from oak.normalising_flow import Normalizer
-from oak.oak_kernel import OAKKernel, get_list_representation
+from oak.joak_kernel import JOAKKernel, get_list_representation
 from oak.plotting_utils import FigureDescription, save_fig_list
 from oak.utils import compute_sobol_oak, initialize_kmeans_with_categorical
 # -
+
+from pmi_model import PMIModel
 
 f64 = gpflow.utilities.to_default_float
 
@@ -87,7 +96,7 @@ def load_model(
             model.trainable_parameters[i].assign(model_params[i])
 
 
-def create_model_oak(
+def create_model_joak(
     data: RegressionData,
     max_interaction_depth: int = 2,
     constrain_orthogonal: bool = True,
@@ -131,9 +140,13 @@ def create_model_oak(
     for dim in range(num_dims):
         if (p0[dim] is None) and (p[dim] is None):
             base_kernels[dim] = gpflow.kernels.RBF
-
-    k = OAKKernel(
+    X, y = data
+    pmi_model = PMIModel(X)
+    pmi_model.train()
+    
+    k = JOAKKernel(
         base_kernels,
+        pmi_model=pmi_model,
         num_dims=num_dims,
         max_interaction_depth=max_interaction_depth,
         constrain_orthogonal=constrain_orthogonal,
@@ -191,7 +204,7 @@ def apply_normalise_flow(X: tf.Tensor, input_flows: List[Normalizer]) -> tf.Tens
     return X_scaled
 
 
-class oak_model:
+class joak_model:
     def __init__(
         self,
         max_interaction_depth=2,
@@ -392,7 +405,7 @@ class oak_model:
             else:
                 Z = X_inducing[: self.num_inducing, :]
 
-        self.m = create_model_oak(
+        self.m = create_model_joak(
             (self.X_scaled, self.Y_scaled),
             max_interaction_depth=self.max_interaction_depth,
             inducing_pts=Z,

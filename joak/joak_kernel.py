@@ -18,7 +18,7 @@ from oak.ortho_categorical_kernel import OrthogonalCategorical
 from oak.ortho_rbf_kernel import OrthogonalRBFKernel
 from tensorflow_probability import bijectors as tfb
 
-
+from pmi_model import PMIModel
 # -
 
 def bounded_param(low: float, high: float, param: float) -> gpflow.Parameter:
@@ -33,7 +33,7 @@ def bounded_param(low: float, high: float, param: float) -> gpflow.Parameter:
     return parameter
 
 
-class OAKKernel(gpflow.kernels.Kernel):
+class JOAKKernel(gpflow.kernels.Kernel):
     """
     Compute OAK kernel
     :param base_kernels: List of base kernel classes for constructing durrande kernel for non-binary inputs. To be deleted
@@ -59,6 +59,7 @@ class OAKKernel(gpflow.kernels.Kernel):
     def __init__(
         self,
         base_kernels: List[Type[gpflow.kernels.Kernel]],
+        pmi_model: PMIModel,
         num_dims: int,
         max_interaction_depth: int,
         active_dims: Optional[List[List[int]]] = None,
@@ -70,6 +71,7 @@ class OAKKernel(gpflow.kernels.Kernel):
         empirical_weights: Optional[List[float]] = None,
         gmm_measures: Optional[List[MOGMeasure]] = None,
         share_var_across_orders: Optional[bool] = True,
+        gaussian: Optional[bool] = False,
     ):
         super().__init__(active_dims=range(num_dims))
         if active_dims is None:
@@ -88,6 +90,7 @@ class OAKKernel(gpflow.kernels.Kernel):
             max_interaction_depth,
         )
         self.share_var_across_orders = share_var_across_orders
+        self.pmi_model = pmi_model
         # p0 is a list of probability measures for binary kernels, set to None if it is not binary
         if p0 is None:
             p0 = [None] * len(active_dims)
@@ -220,7 +223,19 @@ class OAKKernel(gpflow.kernels.Kernel):
                 gpflow.Parameter(1.0, transform=gpflow.utilities.positive())
             ]
 
-    def compute_additive_terms(self, kernel_matrices):
+    def compute_inv_exp_pmi_dict(self, X, X2):
+        if X2 is None:
+            X2 = X
+        if not self.gaussian:
+            inv_exp_pmi_dict = self.pmi_network.inv_exp_pmi_dict(
+                np.concat([X, X2], 0)
+                )
+            #returns a tensor/array of size N by O(C(N, Max_prder))
+        else:
+            raise ValueError('ToDo Inigo')
+        return inv_exp_pmi_dict
+
+    def compute_additive_terms(self, kernel_matrices, inv_exp_pmi_dict):
         """
         Given a list of tensors (kernel matrices), compute a new list
         containing all products up to order self.max_interaction_depth.
@@ -228,31 +243,48 @@ class OAKKernel(gpflow.kernels.Kernel):
         Example:
           input: [a, b, c, d]
           output: [1, (a+b+c+d), (ab+ac+ad+bc+bd+cd), (abc+abd+acd+bcd), abcd)]
-
-        Uses the Girard Newton identity, as found in Duvenaud et al "Additive GPs". this avoid
-        computing exponentially many terms, computations scale with O(D^2) (where D is the length of
-        the kernel list or self.max_interaction_depth)
+        Does not use the Girard Newton identity, as found in Duvenaud et al "Additive GPs".
         """
-        s = [
-            reduce(tf.add, [tf.pow(k, p) for k in kernel_matrices])
-            for p in range(self.max_interaction_depth + 1)
-        ]
-        e = [tf.ones_like(kernel_matrices[0])]  # start with constant term
-        for n in range(1, self.max_interaction_depth + 1):
-            e.append(
-                (1.0 / n)
-                * reduce(
-                    tf.add,
-                    [((-1) ** (k - 1)) * e[n - k] * s[k] for k in range(1, n + 1)],
-                )
-            )
-        return e
+        D = len(kernel_matrices)
+        N, M = kernel_matrices[0].shape
+        max_interaction_depth = self.max_interaction_depth
+        result_by_order = [
+            tf.zeros_like(
+                kernel_matrices[0]
+                ) for _ in range(max_interaction_depth + 1)
+            ]
+        for r in range(1, max_interaction_depth + 1):
+            for subset in itertools.combinations(range(D), r):
+                key = tuple(sorted(subset))
+                #this needs to return N*M by 1
+                inv_exp_pmi = inv_exp_pmi_dict[key]
+                inv_exp_pmi = inv_exp_pmi.reshape(-1, 1)
+
+                inv_exp_pmi1, inv_exp_pmi2 = inv_exp_pmi[:N],\
+                inv_exp_pmi[N:]
+                inv_exp_pmi = tf.convert_to_tensor(
+                    inv_exp_pmi1 @ inv_exp_pmi2.T
+                    )
+                #if key in interaction_weights:
+                # weight = interaction_weights[key]
+                term = tf.ones_like(kernel_matrices[0])
+                for i in subset:
+                    term *= kernel_matrices[i]
+                result_by_order[r] += term * inv_exp_pmi
+                    # result_by_order[r] += weight * term
+        # constant term (optional)
+        result_by_order[0] = tf.ones_like(kernel_matrices[0])
+        return result_by_order
 
     def K(self, X, X2=None):
         kernel_matrices = [
             k(X, X2) for k in self.kernels
         ]  # note that active dims gets applied by each kernel
-        additive_terms = self.compute_additive_terms(kernel_matrices)
+
+        inv_exp_pmi_dict = self.compute_inv_exp_pmi_dict(X, X2)
+        additive_terms = self.compute_additive_terms(
+            kernel_matrices, inv_exp_pmi_dict
+            )
         if self.share_var_across_orders:
             return reduce(
                 tf.add,
@@ -266,7 +298,11 @@ class OAKKernel(gpflow.kernels.Kernel):
 
     def K_diag(self, X):
         kernel_diags = [k.K_diag(k.slice(X)[0]) for k in self.kernels]
-        additive_terms = self.compute_additive_terms(kernel_diags)
+
+        inv_exp_pmi_dict = self.compute_inv_exp_pmi_dict(X, X)
+        additive_terms = self.compute_additive_terms(
+            kernel_diags, inv_exp_pmi_dict
+            )
         if self.share_var_across_orders:
             return reduce(
                 tf.add,
@@ -281,30 +317,31 @@ class OAKKernel(gpflow.kernels.Kernel):
 class KernelComponenent(gpflow.kernels.Kernel):
     def __init__(
         self,
-        oak_kernel: OAKKernel,
+        joak_kernel: JOAKKernel,
         iComponent_list: List[int],
         share_var_across_orders: Optional[bool] = True,
     ):
         # Orthogonal kernel + interactions kernel
         # sort out active_dims - it must be a list of integers
-        super().__init__(active_dims=oak_kernel.active_dims)
-        self.oak_kernel = oak_kernel
+        super().__init__(active_dims=joak_kernel.active_dims)
+        self.joak_kernel = joak_kernel
         self.iComponent_list = iComponent_list
         self.share_var_across_orders = share_var_across_orders
         self.kernels = [
             k
-            for i, k in enumerate(self.oak_kernel.kernels)
+            for i, k in enumerate(self.joak_kernel.kernels)
             if i in self.iComponent_list
         ]
 
     def K(self, X, X2=None):
+        inv_exp_pmi_dict = self.joak_kernel.compute_inv_exp_pmi_dict(X, X2)
         if len(self.iComponent_list) == 0:
             shape = (
                 [tf.shape(X)[0], tf.shape(X)[0]]
                 if X2 is None
                 else [tf.shape(X)[0], tf.shape(X2)[0]]
             )
-            return self.oak_kernel.variances[0] * tf.ones(
+            return self.joak_kernel.variances[0] * tf.ones(
                 shape, dtype=gpflow.default_float()
             )  # start with constant term
         else:
@@ -313,37 +350,40 @@ class KernelComponenent(gpflow.kernels.Kernel):
             n_order = len(self.iComponent_list)  # [0, 1]
             k_mats = [k(X, X2) for k in self.kernels]
             variances_n = (
-                self.oak_kernel.variances[n_order]
+                self.joak_kernel.variances[n_order]
                 if self.share_var_across_orders
                 else 1
             )
-            return variances_n * tf.reduce_prod(k_mats, axis=0)
+            return variances_n * tf.reduce_prod(k_mats, axis=0) \
+                * inv_exp_pmi_dict[self.iComponent_list]
 
     def K_diag(self, X):
+        inv_exp_pmi_dict = self.joak_kernel.compute_inv_exp_pmi_dict(X)
         if len(self.iComponent_list) == 0:
-            return self.oak_kernel.variances[0] * tf.ones(
+            return self.joak_kernel.variances[0] * tf.ones(
                 tf.shape(X)[0], dtype=gpflow.default_float()
             )  # start with constant term
         else:
             n_order = len(self.iComponent_list)
             k_mats = [k.K_diag(k.slice(X)[0]) for k in self.kernels]
             variances_n = (
-                self.oak_kernel.variances[n_order]
+                self.joak_kernel.variances[n_order]
                 if self.share_var_across_orders
                 else 1
             )
-            return variances_n * tf.reduce_prod(k_mats, axis=0)
+            return variances_n * tf.reduce_prod(k_mats, axis=0) \
+                * inv_exp_pmi_dict[self.iComponent_list]
 
 
 def get_list_representation(
-    kernel: OAKKernel,
+    kernel: JOAKKernel,
     num_dims: int,
     share_var_across_orders: Optional[bool] = True,
 ) -> Tuple[List[List[int]], List[KernelComponenent]]:
     """
     Construct kernel list representation of OAK kernel
     """
-    assert isinstance(kernel, OAKKernel)
+    assert isinstance(kernel, JOAKKernel)
     selected_dims = []
     kernel_list = []
     selected_dims.append([])  # no dimensions for constant term
