@@ -335,7 +335,7 @@ def compute_L_empirical_measure(
     return L
 
 
-def compute_sobol_oak(
+def compute_sobol_joak(
     model: gpflow.models.BayesianModel,
     delta: float,
     mu: float,
@@ -351,7 +351,7 @@ def compute_sobol_oak(
     :return: list of input dimension indices and list of sobol indices
     """
     print(model.kernel)
-    assert isinstance(model.kernel, OAKKernel), "only work for OAK kernel"
+    assert isinstance(model.kernel, JOAKKernel), "only work for OAK kernel"
     num_dims = model.data[0].shape[1]
 
     selected_dims_oak, kernel_list = get_list_representation(
@@ -375,7 +375,7 @@ def compute_sobol_oak(
         for j in range(len(kernel.kernels)):
             if share_var_across_orders:
                 if j < 1:
-                    v = kernel.oak_kernel.variances[n_order].numpy()
+                    v = kernel.joak_kernel.variances[n_order].numpy()
                 else:
                     v = 1
             else:

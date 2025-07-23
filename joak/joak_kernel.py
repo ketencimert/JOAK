@@ -71,7 +71,7 @@ class JOAKKernel(gpflow.kernels.Kernel):
         empirical_weights: Optional[List[float]] = None,
         gmm_measures: Optional[List[MOGMeasure]] = None,
         share_var_across_orders: Optional[bool] = True,
-        gaussian: Optional[bool] = False,
+        gaussian_pmi: Optional[bool] = False,
     ):
         super().__init__(active_dims=range(num_dims))
         if active_dims is None:
@@ -82,7 +82,6 @@ class JOAKKernel(gpflow.kernels.Kernel):
         assert len(flat_dims) == len(
             np.unique(flat_dims)
         ), "Active dims contains duplicates."
-        self.gaussian = gaussian
         delta2 = 1  # prior measure process variance hardcoded to 1
         # set up kernels (without parameters for variance)
         self.base_kernels, self.max_interaction_depth = (
@@ -92,6 +91,7 @@ class JOAKKernel(gpflow.kernels.Kernel):
         self.share_var_across_orders = share_var_across_orders
         
         self.pmi_model = pmi_model        
+        self.gaussian_pmi = gaussian_pmi
         # p0 is a list of probability measures for binary kernels, set to None if it is not binary
         if p0 is None:
             p0 = [None] * len(active_dims)
@@ -224,16 +224,20 @@ class JOAKKernel(gpflow.kernels.Kernel):
                 gpflow.Parameter(1.0, transform=gpflow.utilities.positive())
             ]
 
-    def compute_inv_exp_pmi_dict(self, X, X2):
+    def compute_inv_exp_pmi_dict(self, X, X2=None, replicate=True):
         if X2 is None:
-            X2 = X
-        if not self.gaussian:
-            inv_exp_pmi_dict = self.pmi_model.inv_exp_pmi_dict(
-                tf.concat([X, X2], 0)
-                )
-            #returns a tensor/array of size N by O(C(N, Max_prder))
+            if replicate:
+                inputs = tf.concat([X, X], 0)
+            else:
+                inputs = X
+        else:
+            inputs = tf.concat([X, X2], 0)
+
+        if not self.gaussian_pmi:
+            inv_exp_pmi_dict = self.pmi_model.inv_exp_pmi_dict(inputs)
         else:
             raise ValueError('ToDo Inigo')
+        #returns a tensor/array of size N by O(C(N, Max_prder))
         return inv_exp_pmi_dict
 
     def compute_additive_terms(self, kernel_matrices, inv_exp_pmi_dict):
@@ -247,7 +251,13 @@ class JOAKKernel(gpflow.kernels.Kernel):
         Does not use the Girard Newton identity, as found in Duvenaud et al "Additive GPs".
         """
         D = len(kernel_matrices)
-        N, M = kernel_matrices[0].shape
+        if len(kernel_matrices[0].shape) > 1:
+            N, M = kernel_matrices[0].shape
+            diag = False
+        else:
+            N = kernel_matrices[0].shape[0]
+            diag = True
+
         max_interaction_depth = self.max_interaction_depth
         result_by_order = [
             tf.zeros_like(
@@ -259,11 +269,48 @@ class JOAKKernel(gpflow.kernels.Kernel):
                 key = tuple(sorted(subset))
                 #this needs to return N*M by 1
                 inv_exp_pmi = inv_exp_pmi_dict[key]
-                inv_exp_pmi = tf.expand_dims(inv_exp_pmi, -1)
+                if not diag:
+                    inv_exp_pmi1, inv_exp_pmi2 = inv_exp_pmi[:N],\
+                    inv_exp_pmi[N:]
+                    inv_exp_pmi = inv_exp_pmi1 @ tf.transpose(inv_exp_pmi2)
+                else:
+                    inv_exp_pmi = tf.squeeze(inv_exp_pmi**2, -1)
+                #if key in interaction_weights:
+                # weight = interaction_weights[key]
+                term = tf.ones_like(kernel_matrices[0])
+                for i in subset:
+                    term *= kernel_matrices[i]
+                result_by_order[r] += term * tf.cast(inv_exp_pmi, tf.float64)
+                    # result_by_order[r] += weight * term
+        # constant term (optional)
+        result_by_order[0] = tf.ones_like(kernel_matrices[0])
+        return result_by_order
+        """
+        Given a list of tensors (kernel matrices), compute a new list
+        containing all products up to order self.max_interaction_depth.
+
+        Example:
+          input: [a, b, c, d]
+          output: [1, (a+b+c+d), (ab+ac+ad+bc+bd+cd), (abc+abd+acd+bcd), abcd)]
+        Does not use the Girard Newton identity, as found in Duvenaud et al "Additive GPs".
+        """
+        D = len(kernel_matrices)
+        N = kernel_matrices[0].shape
+        max_interaction_depth = self.max_interaction_depth
+        result_by_order = [
+            tf.zeros_like(
+                kernel_matrices[0]
+                ) for _ in range(max_interaction_depth + 1)
+            ]
+        for r in range(1, max_interaction_depth + 1):
+            for subset in itertools.combinations(range(D), r):
+                key = tuple(sorted(subset))
+                #this needs to return N*M by 1
+                inv_exp_pmi = inv_exp_pmi_dict[key]
 
                 inv_exp_pmi1, inv_exp_pmi2 = inv_exp_pmi[:N],\
                 inv_exp_pmi[N:]
-                inv_exp_pmi = inv_exp_pmi1 @ tf.transpose(inv_exp_pmi2)
+                inv_exp_pmi = tf.squeeze(inv_exp_pmi1 * inv_exp_pmi2, -1)
                 #if key in interaction_weights:
                 # weight = interaction_weights[key]
                 term = tf.ones_like(kernel_matrices[0])
@@ -298,7 +345,7 @@ class JOAKKernel(gpflow.kernels.Kernel):
     def K_diag(self, X):
         kernel_diags = [k.K_diag(k.slice(X)[0]) for k in self.kernels]
 
-        inv_exp_pmi_dict = self.compute_inv_exp_pmi_dict(X, X)
+        inv_exp_pmi_dict = self.compute_inv_exp_pmi_dict(X, replicate=False)
         additive_terms = self.compute_additive_terms(
             kernel_diags, inv_exp_pmi_dict
             )
@@ -334,6 +381,11 @@ class KernelComponenent(gpflow.kernels.Kernel):
 
     def K(self, X, X2=None):
         inv_exp_pmi_dict = self.joak_kernel.compute_inv_exp_pmi_dict(X, X2)
+        N = X.shape[0]
+        inv_exp_pmi = inv_exp_pmi_dict[self.iComponent_list]
+        inv_exp_pmi1, inv_exp_pmi2 = inv_exp_pmi[:N],\
+                    inv_exp_pmi[N:]
+        inv_exp_pmi = inv_exp_pmi1 @ tf.transpose(inv_exp_pmi2)
         if len(self.iComponent_list) == 0:
             shape = (
                 [tf.shape(X)[0], tf.shape(X)[0]]
@@ -354,10 +406,14 @@ class KernelComponenent(gpflow.kernels.Kernel):
                 else 1
             )
             return variances_n * tf.reduce_prod(k_mats, axis=0) \
-                * tf.cast(inv_exp_pmi_dict[self.iComponent_list], tf.float64)
+                * tf.cast(inv_exp_pmi, tf.float64)
 
     def K_diag(self, X):
-        inv_exp_pmi_dict = self.joak_kernel.compute_inv_exp_pmi_dict(X)
+        inv_exp_pmi_dict = self.joak_kernel.compute_inv_exp_pmi_dict(
+            X, replicate=False
+            )
+        inv_exp_pmi = inv_exp_pmi_dict[self.iComponent_list]
+        inv_exp_pmi = tf.squeeze(inv_exp_pmi**2, -1)
         if len(self.iComponent_list) == 0:
             return self.joak_kernel.variances[0] * tf.ones(
                 tf.shape(X)[0], dtype=gpflow.default_float()
@@ -371,7 +427,7 @@ class KernelComponenent(gpflow.kernels.Kernel):
                 else 1
             )
             return variances_n * tf.reduce_prod(k_mats, axis=0) \
-                * tf.cast(inv_exp_pmi_dict[self.iComponent_list], tf.float64)
+                * tf.cast(inv_exp_pmi, tf.float64)
 
 
 def get_list_representation(

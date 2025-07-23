@@ -29,7 +29,7 @@ from joak.input_measures import MOGMeasure
 from joak.normalising_flow import Normalizer
 from joak.joak_kernel import JOAKKernel, get_list_representation
 from joak.plotting_utils import FigureDescription, save_fig_list
-from joak.utils import compute_sobol_oak, initialize_kmeans_with_categorical
+from joak.utils import compute_sobol_joak, initialize_kmeans_with_categorical
 # -
 
 from pmi_model import PMIModel
@@ -180,6 +180,7 @@ def create_model_joak(
             for p in model.kernel.variances:
                 p.prior = tfd.Gamma(f64(1.0), f64(0.2))
     # Initialise likelihood variance to small value to avoid finding all-noise explanation minima
+    # Do not train pmi_model
     frozen_refs = set(
         v.ref() for v in pmi_model.trainable_variables + pmi_model.variables
         )
@@ -440,9 +441,16 @@ class joak_model:
         self.alpha = None
         t_start = time.time()
         opt = gpflow.optimizers.Scipy()
+        #do not train pmi_network
+        frozen_refs = set(
+        v.ref() for v in self.m.kernel.pmi_model.trainable_variables + self.m.kernel.pmi_model.variables
+        )
+        trainable_vars = [
+        v for v in self.m.trainable_variables if v.ref() not in frozen_refs
+        ]
         opt.minimize(
             self.m.training_loss_closure(),
-            self.m.trainable_variables,
+            trainable_vars,
             method="BFGS",
             compile=compile,
         )
@@ -530,7 +538,7 @@ class joak_model:
         mu = 0
         selected_dims, _ = get_list_representation(self.m.kernel, num_dims=num_dims)
         tuple_of_indices = selected_dims[1:]
-        model_indices, sobols = compute_sobol_oak(
+        model_indices, sobols = compute_sobol_joak(
             self.m,
             delta,
             mu,
