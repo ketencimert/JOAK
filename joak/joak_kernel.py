@@ -90,7 +90,8 @@ class JOAKKernel(gpflow.kernels.Kernel):
             max_interaction_depth,
         )
         self.share_var_across_orders = share_var_across_orders
-        self.pmi_model = pmi_model
+        
+        self.pmi_model = pmi_model        
         # p0 is a list of probability measures for binary kernels, set to None if it is not binary
         if p0 is None:
             p0 = [None] * len(active_dims)
@@ -268,7 +269,7 @@ class JOAKKernel(gpflow.kernels.Kernel):
                 term = tf.ones_like(kernel_matrices[0])
                 for i in subset:
                     term *= kernel_matrices[i]
-                result_by_order[r] += term * inv_exp_pmi
+                result_by_order[r] += term * tf.cast(inv_exp_pmi, tf.float64)
                     # result_by_order[r] += weight * term
         # constant term (optional)
         result_by_order[0] = tf.ones_like(kernel_matrices[0])
@@ -353,7 +354,7 @@ class KernelComponenent(gpflow.kernels.Kernel):
                 else 1
             )
             return variances_n * tf.reduce_prod(k_mats, axis=0) \
-                * inv_exp_pmi_dict[self.iComponent_list]
+                * tf.cast(inv_exp_pmi_dict[self.iComponent_list], tf.float64)
 
     def K_diag(self, X):
         inv_exp_pmi_dict = self.joak_kernel.compute_inv_exp_pmi_dict(X)
@@ -370,7 +371,7 @@ class KernelComponenent(gpflow.kernels.Kernel):
                 else 1
             )
             return variances_n * tf.reduce_prod(k_mats, axis=0) \
-                * inv_exp_pmi_dict[self.iComponent_list]
+                * tf.cast(inv_exp_pmi_dict[self.iComponent_list], tf.float64)
 
 
 def get_list_representation(

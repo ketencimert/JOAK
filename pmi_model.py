@@ -13,9 +13,9 @@ from sklearn.model_selection import train_test_split
 
 from pmi_network import PMINetwork
 
-import gpflow
-gpflow.config.set_default_float(tf.float64)
-tf.keras.backend.set_floatx('float64')
+# import gpflow
+# gpflow.config.set_default_float(tf.float64)
+# tf.keras.backend.set_floatx('float64')
 
 def sigmoid(z):
     """
@@ -111,8 +111,8 @@ def uniform_pmi_dataset_epoch(X, batch_size=256):
         m_batch = np.random.binomial(1, 1/2, x_joint.shape)
         m_batch = np.concatenate([m_batch, m_batch], 0)
         yield (
-            X_batch.astype(np.float64), m_batch.astype(np.float64)
-            ), 1 - y_batch.astype(np.float64)
+            X_batch.astype(np.float32), m_batch.astype(np.float32)
+            ), 1 - y_batch.astype(np.float32)
 
 def shapley_pmi_dataset_epoch(X, batch_size=256):
     """
@@ -175,8 +175,8 @@ def shapley_pmi_dataset_epoch(X, batch_size=256):
         m_batch = np.concatenate([m_batch, m_batch], 0)
 
         yield (
-            X_batch.astype(np.float64), m_batch.astype(np.float64)
-            ), 1 - y_batch.astype(np.float64)
+            X_batch.astype(np.float32), m_batch.astype(np.float32)
+            ), 1 - y_batch.astype(np.float32)
 
 class PMIModel(tf.keras.Model):
     def __init__(
@@ -241,7 +241,7 @@ class PMIModel(tf.keras.Model):
             activation=activation,
             )
 
-        X = X.astype(np.float64)
+        X = X.astype(np.float32)
         D = X.shape[1]
         X_train, X_val, _, _ = train_test_split(
             X, X, test_size=0.33, random_state=42
@@ -250,9 +250,9 @@ class PMIModel(tf.keras.Model):
         self.train_dataset = tf.data.Dataset.from_generator(
             lambda: data_maker(X_train, batch_size),
             output_signature=((
-                tf.TensorSpec(shape=(None, D), dtype=tf.float64),
-                tf.TensorSpec(shape=(None, D), dtype=tf.float64)),
-                tf.TensorSpec(shape=(None,), dtype=tf.float64),
+                tf.TensorSpec(shape=(None, D), dtype=tf.float32),
+                tf.TensorSpec(shape=(None, D), dtype=tf.float32)),
+                tf.TensorSpec(shape=(None,), dtype=tf.float32),
                 )
             ).prefetch(tf.data.AUTOTUNE)
         self.total = sum(1 for _ in self.train_dataset)
@@ -260,9 +260,9 @@ class PMIModel(tf.keras.Model):
         self.valid_dataset = tf.data.Dataset.from_generator(
             lambda: data_maker(X_val, batch_size),
             output_signature=((
-                tf.TensorSpec(shape=(None, D), dtype=tf.float64),
-                tf.TensorSpec(shape=(None, D), dtype=tf.float64)),
-                tf.TensorSpec(shape=(None,), dtype=tf.float64),
+                tf.TensorSpec(shape=(None, D), dtype=tf.float32),
+                tf.TensorSpec(shape=(None, D), dtype=tf.float32)),
+                tf.TensorSpec(shape=(None,), dtype=tf.float32),
                 )
             ).prefetch(tf.data.AUTOTUNE)
 
@@ -446,14 +446,17 @@ class PMIModel(tf.keras.Model):
                     = tf.convert_to_tensor(np.ones((x.shape[0], 1)))
             else:
                 inv_exp_pmi_dict[tuple(interaction)] \
-                    = tf.exp(
-                    self.network(
-                        (tf.convert_to_tensor(x), tf.convert_to_tensor(m)),
-                        # batch_size=self.batch_size,
-                        training=False
+                    = tf.stop_gradient(
+                        tf.exp(
+                            self.network(
+                                (
+                                    tf.convert_to_tensor(x), 
+                                    tf.convert_to_tensor(m)
+                                    ),
+                                training=False
+                                )
+                            )
                         )
-                    )
-                        
         return inv_exp_pmi_dict
 
 
@@ -464,7 +467,7 @@ if __name__ == '__main__':
     X, _ = make_moons(n_samples=30000, noise=0.1)
     # X = np.random.normal(0, 1, size=(30000,2))
     N, D = X.shape
-    X = X.astype(np.float64)
+    X = X.astype(np.float32)
 
     # Define the model
     model = PMIModel(

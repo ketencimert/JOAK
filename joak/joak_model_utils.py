@@ -180,13 +180,19 @@ def create_model_joak(
             for p in model.kernel.variances:
                 p.prior = tfd.Gamma(f64(1.0), f64(0.2))
     # Initialise likelihood variance to small value to avoid finding all-noise explanation minima
+    frozen_refs = set(
+        v.ref() for v in pmi_model.trainable_variables + pmi_model.variables
+        )
+    trainable_vars = [
+        v for v in model.trainable_variables if v.ref() not in frozen_refs
+        ]
+
     model.likelihood.variance.assign(0.01)
-    
     if optimise:
         t_start = time.time()
         opt = gpflow.optimizers.Scipy()
         opt.minimize(
-            model.training_loss_closure(), model.trainable_variables, method="BFGS"
+            model.training_loss_closure(), trainable_vars, method="BFGS"
         )
         gpflow.utilities.print_summary(model, fmt="notebook")
         print(f"Training took {time.time() - t_start:.1f} seconds.")

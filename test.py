@@ -19,9 +19,6 @@ from joak.utils import get_model_sufficient_statistics, get_prediction_component
 from scipy import io
 from sklearn.model_selection import KFold
 from pathlib import Path
-
-matplotlib.rcParams.update({"font.size": 25})
-
 # +
 # data from repo: https://github.com/duvenaud/additive-gps/blob/master/data/regression/
 # this script is for experiments in Sec 5.1 for regression problems in the paper

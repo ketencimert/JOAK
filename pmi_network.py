@@ -10,10 +10,6 @@ import itertools
 import tensorflow as tf
 # to generate masks
 
-import gpflow
-gpflow.config.set_default_float(tf.float64)
-tf.keras.backend.set_floatx('float64')
-
 def masked_fill(tensor, mask, value):
     return tf.where(mask, tf.fill(tf.shape(tensor), value), tensor)
 
@@ -125,7 +121,7 @@ class MaskedDense(tf.keras.layers.Layer):
     def __init__(self, units, mask, activation=None, use_bias=True):
         super().__init__()
         self.units = units
-        self.mask = tf.constant(mask, dtype=tf.float64)  # fixed binary mask
+        self.mask = tf.constant(mask, dtype=tf.float32)  # fixed binary mask
         self.activation = tf.keras.activations.get(activation)
         self.use_bias = use_bias
 
@@ -135,26 +131,21 @@ class MaskedDense(tf.keras.layers.Layer):
             shape=(input_dim, self.units),
             initializer="glorot_uniform",
             trainable=True,
-            name="weights",
-            dtype=tf.float64
+            name="weights"
         )
         if self.use_bias:
             self.b = self.add_weight(
                 shape=(self.units,),
                 initializer="zeros",
                 trainable=True,
-                name="bias",
-                dtype=tf.float64
+                name="bias"
             )
         else:
             self.b = None
 
     def call(self, inputs):
-        # print(self.w)
-        # print(self.mask)
-        masked_w = self.w * self.mask  # element-wise masking
-        # masked_w = masked_fill(self.w, self.mask==0, 0.)
-        inputs = tf.cast(inputs, tf.float64)
+        # masked_w = self.w * self.mask  # element-wise masking
+        masked_w = masked_fill(self.w, self.mask==0, 0.)
         output = tf.matmul(inputs, masked_w)
         if self.use_bias:
             output = output + self.b
@@ -172,10 +163,9 @@ class SimpleAttention(tf.keras.layers.Layer):
                 tf.keras.layers.Dense(
                     h, 
                     kernel_initializer='glorot_uniform', 
-                    activation=activation,
-                    dtype=tf.float64
+                    activation=activation
                     ) for h in hidden_units
-                ] + [tf.keras.layers.Dense(1, dtype=tf.float64)]
+                ] + [tf.keras.layers.Dense(1)]
             )
 
     def call(self, x):
@@ -183,7 +173,6 @@ class SimpleAttention(tf.keras.layers.Layer):
         x: Tensor of shape (N, D, E)
         Returns: Tensor of shape (N, E)
         """
-        x = tf.cast(x, tf.float64)
         # Compute attention logits (N, D, 1)
         attn_logits = self.attn_proj(x) / (self.input_size**0.5) # shape: (N, D, 1)
         attn_weights = tf.nn.softmax(attn_logits, axis=1)  # softmax over D
@@ -220,8 +209,7 @@ class PMINetwork(tf.keras.Model):
             shape=(1, input_size, embedding_size),
             initializer='glorot_uniform', 
             trainable=True,
-            name='placeholder',
-            dtype=tf.float64
+            name='placeholder'
             )
 
         self.aggregator = tf.keras.Sequential(
@@ -229,17 +217,15 @@ class PMINetwork(tf.keras.Model):
                 tf.keras.layers.Dense(
                     h, 
                     kernel_initializer='glorot_uniform', 
-                    activation=activation,
-                    dtype=tf.float64
+                    activation=activation
                     ) for h in hidden_units
-                ] + [tf.keras.layers.Dense(1, dtype=tf.float64)]
+                ] + [tf.keras.layers.Dense(1)]
             )
         self.attention = SimpleAttention(
             self.input_size, hidden_units, activation
             )
         
     def call(self, inputs):
-       
         x, m = inputs
 
         # Step 1: Apply shared encoder to each feature independently
@@ -254,10 +240,6 @@ class PMINetwork(tf.keras.Model):
             )
         B = tf.shape(x_encoded)[0]
         placeholder_tiled = tf.tile(self.placeholder, [B, 1, 1])
-        
-        placeholder_tiled = tf.cast(placeholder_tiled, tf.float64)
-        m_expand = tf.cast(m_expand, tf.float64)
-        x_encoded = tf.cast(x_encoded, tf.float64)
         # shape: (B, D, E)
 
         x_encoded = x_encoded * m_expand + (1 - m_expand) * placeholder_tiled
