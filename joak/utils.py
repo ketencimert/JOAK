@@ -513,7 +513,8 @@ def get_prediction_component(
         X_conditioned = m.data[0]
     elif isinstance(m, (gpflow.models.SGPR, gpflow.models.SVGP)):
         X_conditioned = m.inducing_variable.Z
-
+    N = X.shape[0]
+    inv_exp_pmi_dict = m.kernel.compute_inv_exp_pmi_dict(X, X_conditioned)
     for n in range(len(tuple_of_indices)):
         Kxx = tf.ones([X.shape[0], alpha.shape[0]], dtype=tf.dtypes.float64)
         num_interaction = len(tuple_of_indices[n])
@@ -522,6 +523,11 @@ def get_prediction_component(
             Kxx *= m.kernel.kernels[idx].K(
                 np.reshape(X[:, idx], (-1, 1)), X_conditioned[:, idx : idx + 1]
             )
+        inv_exp_pmi = inv_exp_pmi_dict[tuple(tuple_of_indices[n])]
+        inv_exp_pmi1, inv_exp_pmi2 = inv_exp_pmi[:N],\
+                    inv_exp_pmi[N:]
+        inv_exp_pmi = inv_exp_pmi1 @ tf.transpose(inv_exp_pmi2)
+        Kxx *= tf.cast(inv_exp_pmi, tf.float64)
         if share_var_across_orders:
             Kxx *= m.kernel.variances[num_interaction]
 
