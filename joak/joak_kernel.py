@@ -90,11 +90,9 @@ class JOAKKernel(gpflow.kernels.Kernel):
         )
         self.share_var_across_orders = share_var_across_orders
         
-        self.pmi_model = pmi_model
-        
+        self.pmi_model = pmi_model        
         print('Mean is', tf.reduce_mean(pmi_model.network.placeholder))
         
-        self.gaussian_pmi = gaussian_pmi
         # p0 is a list of probability measures for binary kernels, set to None if it is not binary
         if p0 is None:
             p0 = [None] * len(active_dims)
@@ -235,12 +233,7 @@ class JOAKKernel(gpflow.kernels.Kernel):
                 inputs = X
         else:
             inputs = tf.concat([X, X2], 0)
-
-        if not self.gaussian_pmi:
-            inv_exp_pmi_dict = self.pmi_model.inv_exp_pmi_dict(inputs)
-        else:
-            raise ValueError('ToDo Inigo')
-        #returns a tensor/array of size N by O(C(N, Max_prder))
+        inv_exp_pmi_dict = self.pmi_model.inv_exp_pmi_dict(inputs)
         return inv_exp_pmi_dict
 
     def compute_additive_terms(self, kernel_matrices, inv_exp_pmi_dict):
@@ -388,7 +381,8 @@ class KernelComponenent(gpflow.kernels.Kernel):
         inv_exp_pmi = inv_exp_pmi_dict[self.iComponent_list]
         inv_exp_pmi1, inv_exp_pmi2 = inv_exp_pmi[:N],\
                     inv_exp_pmi[N:]
-        inv_exp_pmi = inv_exp_pmi1 @ tf.transpose(inv_exp_pmi2)
+        inv_exp_pmi = inv_exp_pmi1 @ tf.transpose(inv_exp_pmi2) #W
+        inv_exp_pmi = inv_exp_pmi / tf.expand_dim(tf.diag(inv_exp_pmi), -1)
         if len(self.iComponent_list) == 0:
             shape = (
                 [tf.shape(X)[0], tf.shape(X)[0]]

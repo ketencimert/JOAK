@@ -244,4 +244,6 @@ class PMINetwork(tf.keras.Model):
 
         x_encoded = x_encoded * m_expand + (1 - m_expand) * placeholder_tiled
         x_agg = self.attention(x_encoded)  # shape: (B, embed_dim)
-        return self.aggregator(x_agg)
+        p = self.aggregator(x_agg)
+        p = 0.5 * (p / (1 + tf.abs(p)) + 1)
+        return p

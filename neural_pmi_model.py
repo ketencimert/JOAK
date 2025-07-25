@@ -26,12 +26,12 @@ def sigmoid(z):
 def generate_combinations(lst, C):
     """
     📌 Generate all possible combinations of the elements in a list.
-    
+
     📌 lst: List of indices. e.g. [0,1,2]
-    
+
     📌 C: Maximum order of combinations
-    
-    📌 e.g., if input is [0,1,2] output will be 
+
+    📌 e.g., if input is [0,1,2] output will be
     [[0], [1], [2], [0,1], [0,2], [1,2], [0,1,2]]
     """
     all_combos = []
@@ -42,11 +42,11 @@ def generate_combinations(lst, C):
 def topk_numpy(arr, k, axis=-1, largest=True, sorted=True):
     """
     📌 Numpy implementation of torch.topk
-    
+
     📌 arr: input array
-    
+
     📌 topk: number of 'top' elements to return
-    
+
     📌 axis: axis which the 'top' elements are returned
     """
     if largest:
@@ -85,9 +85,9 @@ def uniform_pmi_dataset_epoch(X, batch_size=256):
     📌  This function assumes a uniform distribution over feature masking.
     That is, for [0,1,2] we have [0,0,0] -> 1/8, [0,0,1] -> 1/8, [0,1,0] ->1/8
     [0,1,1] -> 1/8 and so forth.
-    
+
     📌 X: Dataset to batch
-    
+
     📌 batch_size : Batch size used during training
     """
     N, D = X.shape
@@ -112,7 +112,7 @@ def uniform_pmi_dataset_epoch(X, batch_size=256):
         m_batch = np.concatenate([m_batch, m_batch], 0)
         yield (
             X_batch.astype(np.float32), m_batch.astype(np.float32)
-            ), 1 - y_batch.astype(np.float32)
+            ), y_batch.astype(np.float32)
 
 def shapley_pmi_dataset_epoch(X, batch_size=256):
     """
@@ -176,9 +176,9 @@ def shapley_pmi_dataset_epoch(X, batch_size=256):
 
         yield (
             X_batch.astype(np.float32), m_batch.astype(np.float32)
-            ), 1 - y_batch.astype(np.float32)
+            ), y_batch.astype(np.float32)
 
-class PMIModel(tf.keras.Model):
+class NeuralPMIModel(tf.keras.Model):
     def __init__(
             self,
             X: np.asarray,
@@ -188,7 +188,7 @@ class PMIModel(tf.keras.Model):
             masked_units=[200, 200],
             hidden_units=[64, 64, 64],
             batch_size=1024,
-            epochs=1000,
+            epochs=3000,
             max_to_keep=20,
             num_evaluation_trials=25, #reduce the variance 5 times
             data_maker=shapley_pmi_dataset_epoch,
@@ -197,16 +197,16 @@ class PMIModel(tf.keras.Model):
         """
         📌 X: Dataset to model PMI -> N by D numpy array
 
-        📌 max_interaction_depth: How many interactions we will model 
+        📌 max_interaction_depth: How many interactions we will model
         -> integer
-        
+
         📌 activation: Activation functions used in network -> string
-        
-        📌 embedding_size: This relates to neural network that will model the 
+
+        📌 embedding_size: This relates to neural network that will model the
         PMI embeddings are generated to simulate missingness during training
         -> integer
 
-        📌 masked_units: This is mask size of each neuron in masked neural 
+        📌 masked_units: This is mask size of each neuron in masked neural
         network -> list of integers
 
         📌 hidden_units: Hidden units in FFNN
@@ -216,18 +216,21 @@ class PMIModel(tf.keras.Model):
 
         📌 epochs: How many epochs to train -> integer
 
-        📌 max_to_keep: How many checkpoints to save during training w.r.t. 
+        📌 max_to_keep: How many checkpoints to save during training w.r.t.
         valid dataset
 
-        📌 num_evaluation_trials: How many times to run the model on valid 
-        data? Validation simulates missingness so the more you run a better MC 
+        📌 num_evaluation_trials: How many times to run the model on valid
+        data? Validation simulates missingness so the more you run a better MC
         estimate -> integer
         """
         self.epochs = epochs
-        self.loss_fn = tf.keras.losses.BinaryCrossentropy(from_logits=True)
+        self.loss_fn = tf.keras.losses.MeanSquaredError()
+        # self.loss_fn = tf.keras.losses.BinaryCrossentropy()
+        # self.loss_fn = tf.keras.losses.MeanAbsoluteError()
         self.batch_size = batch_size
         self.num_evaluation_trials = num_evaluation_trials
         self.max_interaction_depth = max_interaction_depth
+        self.eps = 1e-7
 
         input_size = X.shape[-1]
         self.interactions = generate_combinations(
@@ -314,12 +317,12 @@ class PMIModel(tf.keras.Model):
                 cond1 = avg_val_loss <= self.best_val_loss
                 cond2 = np.isclose(
                     avg_val_loss, self.best_val_loss.numpy(), atol=2e-5
-                    ) 
+                    )
                 # Validation could be good/bad due to noise. So, let's save
                 # if it is close to the best score with 2e-5 dist.
                 if cond1 or cond2:
                     print("✅ New potential best model, saving checkpoint...")
-                    self.manager.save()                    
+                    self.manager.save()
                     if cond1:
                         self.best_val_loss.assign(avg_val_loss)
                         print(f"✅ New best loss: {avg_val_loss:.4f}")
@@ -371,27 +374,29 @@ class PMIModel(tf.keras.Model):
     def inv_exp_pmi_array_(self, x):
         """
         Run this for testing.
-        
+
         📌 input: typically the values you will feed into your OAK-Kernel
 
         📌 output: exponential pmi values given an input instance x.
         if x is 3 dimensional and your are modeling all interactions than
         columns will represent:
         [null, 0, 1, 2, (0,1), (0,2), (1,2), (1,2,3)]
-        
+
         📌 i.e., N by 2^D PMI values (per-instance by per-interaction)
         """
         inv_exp_pmi_array = []
         for interaction in [[]] + self.interactions:
             m = np.zeros_like(x)
             m[:,interaction] = 1
-            #returns logits: log (p/1-p)
-            inv_exp_pmi_vals = np.exp(
-                self.network.predict(
-                    (x, tf.convert_to_tensor(m)),
-                    batch_size=self.batch_size,
-                    )
+            #returns p(x_1) p(x_2) / (p(x_1) p(x_2) + p(x_1, x_2))
+            inv_exp_pmi_vals = self.network.predict(
+                (x, tf.convert_to_tensor(m)),
+                batch_size=self.batch_size,
                 )
+            inv_exp_pmi_vals = inv_exp_pmi_vals / (
+                self.eps + 1 - inv_exp_pmi_vals
+                )
+            inv_exp_pmi_vals = 1 / (inv_exp_pmi_vals + 1e-2)
             inv_exp_pmi_array.append(inv_exp_pmi_vals)
         return np.concatenate(inv_exp_pmi_array, -1)
 
@@ -403,7 +408,7 @@ class PMIModel(tf.keras.Model):
         if x is 3 dimensional and your are modeling all interactions than
         columns will represent:
         [null, 0, 1, 2, (0,1), (0,2), (1,2), (1,2,3)]
-        
+
         📌 i.e., N by 2^D PMI values (per-instance by per-interaction)
         """
         inv_exp_pmi_array = []
@@ -414,26 +419,28 @@ class PMIModel(tf.keras.Model):
             if len(interaction) <= 1:
                 inv_exp_pmi_vals = np.ones((x.shape[0], 1))
             else:
-                inv_exp_pmi_vals = np.exp(
-                    self.network.predict(
+                inv_exp_pmi_vals = self.network.predict(
                         (x, tf.convert_to_tensor(m)),
                         batch_size=self.batch_size,
                         )
+                inv_exp_pmi_vals = inv_exp_pmi_vals / (
+                    self.eps + 1 - inv_exp_pmi_vals
                     )
-            inv_exp_pmi_array.append(inv_exp_pmi_vals )
+                inv_exp_pmi_vals = 1 / (inv_exp_pmi_vals + 1e-2)
+            inv_exp_pmi_array.append(inv_exp_pmi_vals)
         return np.concatenate(inv_exp_pmi_array, -1)
 
     def inv_exp_pmi_dict(self, x):
         """
         For JOAK, use this.
-        
+
         📌 input: typically the values you will feed into your OAK-Kernel
 
         📌 output: exponential pmi values given an input instance x.
         if x is 3 dimensional and your are modeling all interactions than
         columns will represent:
         [null, 0, 1, 2, (0,1), (0,2), (1,2), (1,2,3)]
-        
+
         📌 i.e., N by 2^D PMI values (per-instance by per-interaction)
         """
         inv_exp_pmi_dict = dict()
@@ -445,18 +452,22 @@ class PMIModel(tf.keras.Model):
                 inv_exp_pmi_dict[tuple(interaction)] \
                     = tf.convert_to_tensor(np.ones((x.shape[0], 1)))
             else:
-                inv_exp_pmi_dict[tuple(interaction)] \
+                inv_exp_pmi_vals \
                     = tf.stop_gradient(
-                        tf.exp(
                             self.network(
                                 (
-                                    tf.convert_to_tensor(x), 
+                                    tf.convert_to_tensor(x),
                                     tf.convert_to_tensor(m)
                                     ),
                                 training=False
                                 )
                             )
-                        )
+                inv_exp_pmi_vals = inv_exp_pmi_vals / (
+                    self.eps + 1 - inv_exp_pmi_vals
+                    )
+                inv_exp_pmi_dict[tuple(interaction)] = 1 / (
+                    inv_exp_pmi_vals + 1e-2
+                    )
         return inv_exp_pmi_dict
 
 
@@ -470,9 +481,9 @@ if __name__ == '__main__':
     X = X.astype(np.float32)
 
     # Define the model
-    model = PMIModel(
-        X=X, 
-        data_maker=shapley_pmi_dataset_epoch
+    model = NeuralPMIModel(
+        X=X,
+        data_maker=uniform_pmi_dataset_epoch
         )
     model.train()
 
@@ -485,12 +496,12 @@ if __name__ == '__main__':
     for points in pmi_points.T:
         # Predict probabilities and compute inverse PMI
         exp_pmi_vals = points
-        pmi_grid = np.log(exp_pmi_vals.reshape(grid_x0.shape))
+        pmi_grid = exp_pmi_vals.reshape(grid_x0.shape)
         # Plot the estimated log inverse PMI
         plt.figure(figsize=(6, 5))
         plt.contourf(
             grid_x0, grid_x1, pmi_grid,
-            #norm=divnorm, 
+            #norm=divnorm,
             levels=200, cmap='viridis'
             )
         plt.colorbar(label='PMI Estimate')
