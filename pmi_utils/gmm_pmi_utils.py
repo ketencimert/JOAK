@@ -14,10 +14,6 @@ from sklearn.datasets import make_moons
 tfd = tfp.distributions
 tfb = tfp.bijectors
 
-# Generate toy 2D data (two moons)
-X, y = make_moons(n_samples=500, noise=0.05)
-X = X.astype(np.float32)
-
 # Define GMM Model
 class GMM(tf.keras.Model):
     def __init__(self, n_components=5, n_dims=2):
@@ -25,11 +21,17 @@ class GMM(tf.keras.Model):
         self.n_components = n_components
         self.n_dims = n_dims
 
-        self.logits = tf.Variable(tf.zeros([n_components]), name="logits")
-        self.locs = tf.Variable(tf.random.normal([n_components, n_dims]), name="locs")
+        self.logits = tf.Variable(
+            tf.zeros([n_components]), name="logits"
+            )
+        self.locs = tf.Variable(
+            tf.random.normal([n_components, n_dims]), name="locs"
+            )
         self.scales = tfp.util.TransformedVariable(
-            tf.ones([n_components, n_dims]), bijector=tfb.Softplus(), name="scales"
-        )
+            tf.ones([n_components, n_dims]), 
+            bijector=tfb.Softplus(), 
+            name="scales"
+            )
 
     def distribution(self):
         components = tfd.MultivariateNormalDiag(
@@ -64,11 +66,17 @@ class GMM(tf.keras.Model):
         return self.distribution().sample(n)
 
 if __name__ == '__main__':
-
+    
+    # TEST YOUR GAUSSIAN MIXTURE MODEL FOR DENSITY ESTIMATION!
+    
     # Train the GMM
     model = GMM(n_components=500, n_dims=2)
     optimizer = tf.keras.optimizers.Adam(learning_rate=0.05)
-    
+
+    # Generate toy 2D data (two moons)
+    X, y = make_moons(n_samples=500, noise=0.05)
+    X = X.astype(np.float32)
+
     for step in range(3000):
         with tf.GradientTape() as tape:
             loss = -tf.reduce_mean(model.log_prob(X))
@@ -99,7 +107,9 @@ if __name__ == '__main__':
     axes[0].set_title("GMM Density with Original Data")
     axes[0].axis("equal")
     
-    axes[1].scatter(samples[:, 0], samples[:, 1], c='tomato', s=10, alpha=0.7)
+    axes[1].scatter(
+        samples[:, 0], samples[:, 1], c='tomato', s=10, alpha=0.7
+        )
     axes[1].set_title("Samples from Trained GMM")
     axes[1].axis("equal")
     

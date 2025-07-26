@@ -111,6 +111,7 @@ def create_model_joak(
     use_sparsity_prior: bool = True,
     gmm_measures: Optional[List[MOGMeasure]] = None,
     share_var_across_orders: Optional[bool] = True,
+    pmi_model_type: str = 'neural',
 ) -> GPModel:
     """
     :param num_dims: number of dimensions of inputs
@@ -141,9 +142,11 @@ def create_model_joak(
         if (p0[dim] is None) and (p[dim] is None):
             base_kernels[dim] = gpflow.kernels.RBF
     X, y = data
+
     pmi_model = PMIModel(
         X=X,
         max_interaction_depth=max_interaction_depth,
+        pmi_model_type=pmi_model_type
         )
     pmi_model.train()
     
@@ -229,6 +232,7 @@ class joak_model:
         sparse: bool = False,
         use_normalising_flow: bool = True,
         share_var_across_orders: bool = True,
+        pmi_model_type: str = 'neural',
     ):
         """
         :param max_interaction_depth: maximum number of interaction terms to consider
@@ -269,6 +273,7 @@ class joak_model:
         self.sparse = sparse
         self.use_normalising_flow = use_normalising_flow
         self.share_var_across_orders = share_var_across_orders
+        self.pmi_model_type = pmi_model_type
 
     def fit(
         self,
@@ -429,6 +434,7 @@ class joak_model:
             empirical_weights=self.empirical_weights,
             gmm_measures=self.estimated_gmm_measures,
             share_var_across_orders=self.share_var_across_orders,
+            pmi_model_type=self.pmi_model_type
         )
 
     def optimise(

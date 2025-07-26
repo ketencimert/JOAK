@@ -8,39 +8,10 @@ Created on Mon Jul 14 21:27:35 2025
 import numpy as np
 import itertools
 import tensorflow as tf
-# to generate masks
+from pmi_utils.shared_pmi_utils import topk_numpy
 
 def masked_fill(tensor, mask, value):
     return tf.where(mask, tf.fill(tf.shape(tensor), value), tensor)
-
-def topk_numpy(arr, k, axis=-1, largest=True, sorted=True):
-    if largest:
-        partitioned_indices = np.argpartition(-arr, k-1, axis=axis)
-    else:
-        partitioned_indices = np.argpartition(arr, k-1, axis=axis)
-
-    topk_indices_unsorted = np.take(
-        partitioned_indices, np.arange(k), axis=axis
-        )
-
-    topk_values_unsorted = np.take_along_axis(
-        arr, topk_indices_unsorted, axis=axis
-        )
-
-    if sorted:
-        sort_order = np.argsort(
-            -topk_values_unsorted if largest else topk_values_unsorted,
-            axis=axis
-            )
-        topk_values = np.take_along_axis(
-            topk_values_unsorted, sort_order, axis=axis
-            )
-        topk_indices = np.take_along_axis(
-            topk_indices_unsorted, sort_order, axis=axis
-            )
-        return topk_values, topk_indices
-    else:
-        return topk_values_unsorted, topk_indices_unsorted
 
 def create_resulting_mask(input_size, output_size, combinations):
     #Define the last mask

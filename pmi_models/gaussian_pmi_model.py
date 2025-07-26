@@ -1,4 +1,9 @@
-from itertools import combinations
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Jul 25 23:22:45 2025
+
+@author: Mert
+"""
 
 import numpy as np
 import tensorflow as tf
@@ -8,58 +13,36 @@ import matplotlib.pyplot as plt
 from sklearn.datasets import make_moons
 import tensorflow_probability as tfp
 
+from pmi_utils.shared_pmi_utils import generate_combinations
+
 tfd = tfp.distributions
-
-def generate_combinations(lst, C):
-    """
-    📌 Generate all possible combinations of the elements in a list.
-
-    📌 lst: List of indices. e.g. [0,1,2]
-
-    📌 C: Maximum order of combinations
-
-    📌 e.g., if input is [0,1,2] output will be
-    [[0], [1], [2], [0,1], [0,2], [1,2], [0,1,2]]
-    """
-    all_combos = []
-    for r in range(1, C + 1):
-        all_combos.extend(combinations(lst, r))
-    return [list(c) for c in all_combos]
 
 class GaussianPMIModel(tf.keras.Model):
     def __init__(
             self,
             X: np.asarray,
-            max_interaction_depth=2,
+            max_interaction_depth: int = 2,
             ):
         super().__init__()
         """
-        📌 X: Dataset to model PMI -> N by D numpy array
-
-        📌 max_interaction_depth: How many interactions we will model
-        -> integer
+        📌 A single Gaussian to estimate kernel weights.
+        📌 Args:
+            📌 X: Dataset to model PMI -> N by D numpy array
+            📌 max_interaction_depth: How many interactions we will model
         """
 
         input_size = X.shape[-1]
         self.interactions = generate_combinations(
             range(input_size), max_interaction_depth
             )
+        self.X = X
 
-    def train(self, X):
+    def train(self):
         """
-        📌 Estimate the mean vector and covariance matrix of a dataset 
-        using TensorFlow.
-        
-        📌 Args:
-            📌 X: tf.Tensor of shape (N, D), where N is the number of samples 
-            and D is the number of dimensions.
-    
-        📌 Returns:
-             📌 mean: tf.Tensor of shape (D,)
-             📌 covariance: tf.Tensor of shape (D, D)
+        📌 Learn a single Gaussian to estimate the data density.
         """
         # Convert to float32 if necessary
-        X = tf.cast(X, tf.float32)
+        X = tf.cast(self.X, tf.float32)
     
         # Compute mean
         self.mean = tf.reduce_mean(X, axis=0)  # shape (D,)
@@ -76,15 +59,14 @@ class GaussianPMIModel(tf.keras.Model):
     def inv_exp_pmi_dict(self, x):
         """
         For JOAK, use this.
+        📌 Args:
+            📌 input: typically the values you will feed into your OAK-Kernel
 
-        📌 input: typically the values you will feed into your OAK-Kernel
-
-        📌 output: exponential pmi values given an input instance x.
-        if x is 3 dimensional and your are modeling all interactions than
-        columns will represent:
-        [null, 0, 1, 2, (0,1), (0,2), (1,2), (1,2,3)]
-
-        📌 i.e., N by 2^D PMI values (per-instance by per-interaction)
+        📌 Returns:
+            📌 inv_exp_pmi_dict: 
+                exponential inverse pmi values given an input instance x.
+                keys are interaction values (tuple) and values are tf arrays.
+            📌 i.e., N by 2^D PMI values (per-instance by per-interaction)
         """
         inv_exp_pmi_dict = dict()
         for interaction in [[]] + self.interactions:
@@ -114,7 +96,9 @@ class GaussianPMIModel(tf.keras.Model):
                     ).log_prob(x_)
                 inv_exp_pmi_vals = tf.exp(inv_pmi_vals)
                 inv_exp_pmi_vals = tf.reshape(inv_exp_pmi_vals, (-1,1))
-                inv_exp_pmi_dict[tuple(interaction)] = inv_exp_pmi_vals
+                inv_exp_pmi_dict[tuple(interaction)] = tf.stop_gradient(
+                    inv_exp_pmi_vals
+                    )
 
         return inv_exp_pmi_dict
 
@@ -144,17 +128,17 @@ if __name__ == '__main__':
     model = GaussianPMIModel(
         X=X,
         )
-    model.train(X)
+    model.train()
 
     # Evaluate PMI on a grid
     x0 = np.linspace(X[:,0].min(), X[:,0].max(), 200)
     x1 = np.linspace(X[:,1].min(), X[:,1].max(), 200)
     grid_x0, grid_x1 = np.meshgrid(x0, x1)
     grid_points = np.stack([grid_x0.ravel(), grid_x1.ravel()], axis=1)
-    pmi_points = model.inv_exp_pmi_array_(grid_points) #for testing
-    for points in pmi_points.T:
+    pmi_points = model.inv_exp_pmi_dict(grid_points) #for testing
+    for points in pmi_points.values():
         # Predict probabilities and compute inverse PMI
-        exp_pmi_vals = points
+        exp_pmi_vals = points.numpy()
         pmi_grid = exp_pmi_vals.reshape(grid_x0.shape)
         # Plot the estimated log inverse PMI
         plt.figure(figsize=(6, 5))
@@ -163,10 +147,7 @@ if __name__ == '__main__':
             #norm=divnorm,
             levels=200, cmap='viridis'
             )
-        plt.colorbar(label='PMI Estimate')
-        plt.title(
-            'Estimated PMI(x₀; x₁) via Discriminator (Shuffled In-Model)'
-            )
+        plt.colorbar(label='Inverse EXP PMI Estimate')
         plt.xlabel('x₀')
         plt.ylabel('x₁')
         plt.tight_layout()

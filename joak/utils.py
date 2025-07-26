@@ -514,7 +514,7 @@ def get_prediction_component(
     elif isinstance(m, (gpflow.models.SGPR, gpflow.models.SVGP)):
         X_conditioned = m.inducing_variable.Z
     N = X.shape[0]
-    inv_exp_pmi_dict = m.kernel.compute_inv_exp_pmi_dict(X, X_conditioned)
+    inv_exp_pmi_dict = m.kernel.compute_kernel_weights(X, X_conditioned)
     for n in range(len(tuple_of_indices)):
         Kxx = tf.ones([X.shape[0], alpha.shape[0]], dtype=tf.dtypes.float64)
         num_interaction = len(tuple_of_indices[n])

@@ -67,7 +67,7 @@ for train_index, test_index in kf.split(X):
         X_train, X_test = X[train_index], X[test_index]
         y_train, y_test = y[train_index], y[test_index]
     fold += 1
-  
+
 ###############################################################################
 ###############################################################################
 ###############################################################################
@@ -78,7 +78,11 @@ for train_index, test_index in kf.split(X):
 ###############################################################################
 ###############################################################################
 
-joak = joak_model(max_interaction_depth=X.shape[1])
+joak = joak_model(
+    max_interaction_depth=X.shape[1],
+    pmi_model_type='neural'
+    )
+
 joak.fit(X_train, y_train)
 
 # test performance

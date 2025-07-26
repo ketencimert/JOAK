@@ -71,7 +71,6 @@ class JOAKKernel(gpflow.kernels.Kernel):
         empirical_weights: Optional[List[float]] = None,
         gmm_measures: Optional[List[MOGMeasure]] = None,
         share_var_across_orders: Optional[bool] = True,
-        gaussian_pmi: Optional[bool] = False,
     ):
         super().__init__(active_dims=range(num_dims))
         if active_dims is None:
@@ -91,7 +90,6 @@ class JOAKKernel(gpflow.kernels.Kernel):
         self.share_var_across_orders = share_var_across_orders
         
         self.pmi_model = pmi_model        
-        print('Mean is', tf.reduce_mean(pmi_model.network.placeholder))
         
         # p0 is a list of probability measures for binary kernels, set to None if it is not binary
         if p0 is None:
@@ -225,7 +223,7 @@ class JOAKKernel(gpflow.kernels.Kernel):
                 gpflow.Parameter(1.0, transform=gpflow.utilities.positive())
             ]
 
-    def compute_inv_exp_pmi_dict(self, X, X2=None, replicate=True):
+    def compute_kernel_weights(self, X, X2=None, replicate=True):
         if X2 is None:
             if replicate:
                 inputs = tf.concat([X, X], 0)
@@ -233,7 +231,7 @@ class JOAKKernel(gpflow.kernels.Kernel):
                 inputs = X
         else:
             inputs = tf.concat([X, X2], 0)
-        inv_exp_pmi_dict = self.pmi_model.inv_exp_pmi_dict(inputs)
+        inv_exp_pmi_dict = self.pmi_model.compute_kernel_weights(inputs)
         return inv_exp_pmi_dict
 
     def compute_additive_terms(self, kernel_matrices, inv_exp_pmi_dict):
@@ -323,7 +321,7 @@ class JOAKKernel(gpflow.kernels.Kernel):
             k(X, X2) for k in self.kernels
         ]  # note that active dims gets applied by each kernel
 
-        inv_exp_pmi_dict = self.compute_inv_exp_pmi_dict(X, X2)
+        inv_exp_pmi_dict = self.compute_kernel_weights(X, X2)
         additive_terms = self.compute_additive_terms(
             kernel_matrices, inv_exp_pmi_dict
             )
@@ -341,7 +339,7 @@ class JOAKKernel(gpflow.kernels.Kernel):
     def K_diag(self, X):
         kernel_diags = [k.K_diag(k.slice(X)[0]) for k in self.kernels]
 
-        inv_exp_pmi_dict = self.compute_inv_exp_pmi_dict(X, replicate=False)
+        inv_exp_pmi_dict = self.compute_kernel_weights(X, replicate=False)
         additive_terms = self.compute_additive_terms(
             kernel_diags, inv_exp_pmi_dict
             )
@@ -376,7 +374,7 @@ class KernelComponenent(gpflow.kernels.Kernel):
         ]
 
     def K(self, X, X2=None):
-        inv_exp_pmi_dict = self.joak_kernel.compute_inv_exp_pmi_dict(X, X2)
+        inv_exp_pmi_dict = self.joak_kernel.compute_kernel_weights(X, X2)
         N = X.shape[0]
         inv_exp_pmi = inv_exp_pmi_dict[self.iComponent_list]
         inv_exp_pmi1, inv_exp_pmi2 = inv_exp_pmi[:N],\
@@ -406,7 +404,7 @@ class KernelComponenent(gpflow.kernels.Kernel):
                 * tf.cast(inv_exp_pmi, tf.float64)
 
     def K_diag(self, X):
-        inv_exp_pmi_dict = self.joak_kernel.compute_inv_exp_pmi_dict(
+        inv_exp_pmi_dict = self.joak_kernel.compute_kernel_weights(
             X, replicate=False
             )
         inv_exp_pmi = inv_exp_pmi_dict[self.iComponent_list]

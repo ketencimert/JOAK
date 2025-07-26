@@ -5,3 +5,7 @@ test/*
 data/*
 test.ipynb
 .ipynb_checkpoints
+pmi_models/__pycache__
+pmi_utils/__pycache__
+joak/__pycache__
+oak/__pycache__

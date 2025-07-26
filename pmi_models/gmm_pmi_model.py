@@ -1,5 +1,11 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Jul 25 23:22:45 2025
+
+@author: Mert
+"""
+
 from datetime import datetime
-from itertools import combinations
 
 import numpy as np
 import tensorflow as tf
@@ -11,50 +17,19 @@ import matplotlib.pyplot as plt
 from sklearn.datasets import make_moons
 from sklearn.model_selection import train_test_split
 
-from gmm_pmi_utils import GMM
-
-def generate_combinations(lst, C):
-    """
-    📌 Generate all possible combinations of the elements in a list.
-
-    📌 lst: List of indices. e.g. [0,1,2]
-
-    📌 C: Maximum order of combinations
-
-    📌 e.g., if input is [0,1,2] output will be
-    [[0], [1], [2], [0,1], [0,2], [1,2], [0,1,2]]
-    """
-    all_combos = []
-    for r in range(1, C + 1):
-        all_combos.extend(combinations(lst, r))
-    return [list(c) for c in all_combos]
-
-def simple_dataset_epoch(X, batch_size=256):
-    """
-    📌  This function assumes a uniform distribution over feature masking.
-    That is, for [0,1,2] we have [0,0,0] -> 1/8, [0,0,1] -> 1/8, [0,1,0] ->1/8
-    [0,1,1] -> 1/8 and so forth.
-
-    📌 X: Dataset to batch
-
-    📌 batch_size : Batch size used during training
-    """
-    N, D = X.shape
-    indices = np.random.permutation(N)
-    for i in range(0, N, batch_size):
-        batch_idx = indices[i:i+batch_size]
-        X_batch = X[batch_idx]
-        yield X_batch.astype(np.float32)
+from pmi_utils.gmm_pmi_utils import GMM
+from pmi_utils.shared_pmi_utils import generate_combinations, \
+    simple_dataset_epoch
 
 class GaussianMixturePMIModel(tf.keras.Model):
     def __init__(
             self,
             X: np.asarray,
-            max_interaction_depth=2,
-            n_components=100,
-            batch_size=1024,
-            epochs=3000,
-            max_to_keep=1,
+            max_interaction_depth: int = 2,
+            n_components: int = 100,
+            batch_size: int = 1024,
+            epochs: int = 3000,
+            max_to_keep: int = 1,
             ):
         super().__init__()
         """
@@ -67,7 +42,7 @@ class GaussianMixturePMIModel(tf.keras.Model):
         self.epochs = epochs
         self.batch_size = batch_size
         self.max_interaction_depth = max_interaction_depth
-        self.eps = 1e-7
+        self.eps = 1e-3
 
         input_size = X.shape[-1]
         self.interactions = generate_combinations(
@@ -116,6 +91,9 @@ class GaussianMixturePMIModel(tf.keras.Model):
             )
 
     def train(self):
+        """
+        📌 Learn GMM to estimate the data density.
+        """
         try:
             print('Fitting PMI estimation module.')
             for epoch in range(self.epochs):
@@ -199,15 +177,14 @@ class GaussianMixturePMIModel(tf.keras.Model):
     def inv_exp_pmi_dict(self, x):
         """
         For JOAK, use this.
+        📌 Args:
+            📌 input: typically the values you will feed into your OAK-Kernel
 
-        📌 input: typically the values you will feed into your OAK-Kernel
-
-        📌 output: exponential pmi values given an input instance x.
-        if x is 3 dimensional and your are modeling all interactions than
-        columns will represent:
-        [null, 0, 1, 2, (0,1), (0,2), (1,2), (1,2,3)]
-
-        📌 i.e., N by 2^D PMI values (per-instance by per-interaction)
+        📌 Returns:
+            📌 inv_exp_pmi_dict: 
+                exponential inverse pmi values given an input instance x.
+                keys are interaction values (tuple) and values are tf arrays.
+            📌 i.e., N by 2^D PMI values (per-instance by per-interaction)
         """
         inv_exp_pmi_dict = dict()
         for interaction in [[]] + self.interactions:
@@ -216,16 +193,22 @@ class GaussianMixturePMIModel(tf.keras.Model):
                 inv_exp_pmi_dict[tuple(interaction)] \
                     = tf.convert_to_tensor(np.ones((x.shape[0], 1)))
             else:
-                exp_pmi_vals1 = tf.exp(
-                    self.estimator.marginal_log_prob(x, interaction)
-                    )
-                exp_pmi_vals2 = tf.exp(tf.reduce_sum(tf.stack([
+                #marginal logprob
+                exp_pmi_vals1 = tf.exp(tf.reduce_sum(tf.stack([
                     self.estimator.marginal_log_prob(x, [i])
                     for i in interaction
                     ], -1), -1))
-                inv_exp_pmi_vals = exp_pmi_vals1 / exp_pmi_vals2 + 1e-1
-                inv_exp_pmi_vals = inv_exp_pmi_vals ** (-1)
-                inv_exp_pmi_dict[tuple(interaction)] = inv_exp_pmi_vals
+                #joint logprob
+                exp_pmi_vals2 = tf.exp(
+                    self.estimator.marginal_log_prob(x, interaction)
+                    )
+                #marginal / joint are kernel weights =
+                #inv exp pmi values
+                inv_exp_pmi_vals = exp_pmi_vals1 / (exp_pmi_vals2 + self.eps)
+                # inv_exp_pmi_vals = inv_exp_pmi_vals ** (-1)
+                inv_exp_pmi_dict[tuple(interaction)] = tf.stop_gradient(
+                    inv_exp_pmi_vals
+                    )
         return inv_exp_pmi_dict
 
 if __name__ == '__main__':
@@ -262,11 +245,9 @@ if __name__ == '__main__':
             #norm=divnorm,
             levels=200, cmap='viridis'
             )
-        plt.colorbar(label='PMI Estimate')
-        # plt.title(
-        #     'Estimated PMI(x₀; x₁) via Discriminator (Shuffled In-Model)'
-        #     )
+        plt.colorbar(label='Inverse EXP PMI Estimate')
         plt.xlabel('x₀')
         plt.ylabel('x₁')
         plt.tight_layout()
         plt.show()
+
