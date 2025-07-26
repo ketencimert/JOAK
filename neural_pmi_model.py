@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from sklearn.datasets import make_moons
 from sklearn.model_selection import train_test_split
 
-from pmi_network import PMINetwork
+from neural_pmi_utils import PMINetwork
 
 # import gpflow
 # gpflow.config.set_default_float(tf.float64)
@@ -116,7 +116,8 @@ def uniform_pmi_dataset_epoch(X, batch_size=256):
 
 def shapley_pmi_dataset_epoch(X, batch_size=256):
     """
-    📌  This function assumes a uniform distribution over feature masking sizes.
+    📌  This function assumes a uniform distribution over
+    feature masking sizes.
     That is, uniform distribution over "coalition" sizes. For [0,1,2], we have
     size(0) -> 1/4, size(1) -> 1/4, size(2) -> 1/4, size(3) -> 1/4.
 
